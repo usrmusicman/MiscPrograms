@@ -8,23 +8,35 @@ YABRIDGE_VER=5.1.1
 if [[ "$#" == "1" ]]; then
     if [[ "$1" == "install" ]]; then
         # Make YaVST bundle directory and wine installation directory
-        mkdir -p $BUNDLE_PATH
+        mkdir -p "$BUNDLE_PATH"
 
         # Make the yabridge directory
-        mkdir -p $HOME/.local/share/yabridge
+        mkdir -p "$HOME/.local/share/yabridge"
 
         # Download and install Yabridge
-        wget https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VER}/yabridge-${YABRIDGE_VER}.tar.gz
-        tar -xvzf ${PWD}/yabridge-${YABRIDGE_VER}.tar.gz
-        cp -rvf ${PWD}/yabridge/* $HOME/.local/share/yabridge
+        wget "https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VER}/yabridge-${YABRIDGE_VER}.tar.gz"
+
+        # Archive handling for yabridge
+        tar -xvzf "${PWD}/yabridge-${YABRIDGE_VER}.tar.gz"
+        rm "${PWD}/yabridge-${YABRIDGE_VER}.tar.gz"
+
+        # Directory handling for yabridge
+        mv "${PWD}/yabridge"/* "$HOME/.local/share/yabridge"
+        rm -rf "${PWD}/yabridge"
 
         # Download and unzip wine
-        wget https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VER}/wine-${WINE_VER}-staging-tkg-amd64-wow64.tar.xz
-        tar -xvJf ${PWD}/wine-${WINE_VER}-staging-tkg-amd64-wow64.tar.xz
-        cp -rvf ${PWD}/wine-${WINE_VER}-staging-tkg-amd64-wow64/* $BUNDLE_PATH
+        wget "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VER}/wine-${WINE_VER}-staging-tkg-amd64-wow64.tar.xz"
+
+        # Archive handling for wine
+        tar -xvJf "${PWD}/wine-${WINE_VER}-staging-tkg-amd64-wow64.tar.xz"
+        rm "${PWD}/wine-${WINE_VER}-staging-tkg-amd64-wow64.tar.xz"
+
+        # Directory handling for wine
+        mv "${PWD}/wine-${WINE_VER}-staging-tkg-amd64-wow64"/* "$BUNDLE_PATH"
+        rm -rf "${PWD}/wine-${WINE_VER}-staging-tkg-amd64-wow64"
 
         # Create Link to Yabridge directory
-        ln -sf $HOME/.local/share/yabridge $BUNDLE_PATH
+        ln -sf "$HOME/.local/share/yabridge" "$BUNDLE_PATH/yabridge"
 
 
     elif [[ "$1" == "setenv" ]]; then
@@ -40,8 +52,8 @@ if [[ "$#" == "1" ]]; then
         echo "export LD_LIBRARY_PATH=\"\$YAVST_PATH/lib:\$LD_LIBRARY_PATH\"" >> $HOME/.bashrc
 
     elif [[ "$1" == "uninstall" ]]; then
-        rm -rvf $BUNDLE_PATH
-        rm -rvf $HOME/.local/share/yabridge
+        rm -rvf "$BUNDLE_PATH"
+        rm -rvf "$HOME/.local/share/yabridge"
 
     else
         echo "Usage: yavst_setup.sh <argument>"
