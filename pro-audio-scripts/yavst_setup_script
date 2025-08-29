@@ -6,7 +6,7 @@ WINE_VER=9.21
 YABRIDGE_VER=5.1.1
 
 if [[ "$#" == "1" ]]; then
-    if [[ "$1" == "install" ]]; then
+    if [[ "$1" == "install-multilib" ]]; then
         # Make YaVST bundle directory and wine installation directory
         mkdir -p "$BUNDLE_PATH"
 
@@ -24,7 +24,39 @@ if [[ "$#" == "1" ]]; then
         mv "${PWD}/yabridge"/* "$HOME/.local/share/yabridge"
         rm -rf "${PWD}/yabridge"
 
-        # Download and unzip wine
+        # Download and unzip wine (default install of wine, requires a linux distro with 32bit libraries installed)
+        wget "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VER}/wine-${WINE_VER}-staging-tkg-amd64.tar.xz"
+
+        # Archive handling for wine
+        tar -xvJf "${PWD}/wine-${WINE_VER}-staging-tkg-amd64.tar.xz"
+        rm "${PWD}/wine-${WINE_VER}-staging-tkg-amd64.tar.xz"
+
+        # Directory handling for wine
+        mv "${PWD}/wine-${WINE_VER}-staging-tkg-amd64"/* "$BUNDLE_PATH"
+        rm -rf "${PWD}/wine-${WINE_VER}-staging-tkg-amd64"
+
+        # Create Link to Yabridge directory
+        ln -sf "$HOME/.local/share/yabridge" "$BUNDLE_PATH/yabridge"
+
+    elif [[ "$1" == "install-wow64" ]]; then
+        # Make YaVST bundle directory and wine installation directory
+        mkdir -p "$BUNDLE_PATH"
+
+        # Make the yabridge directory
+        mkdir -p "$HOME/.local/share/yabridge"
+
+        # Download and install Yabridge
+        wget "https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VER}/yabridge-${YABRIDGE_VER}.tar.gz"
+
+        # Archive handling for yabridge
+        tar -xvzf "${PWD}/yabridge-${YABRIDGE_VER}.tar.gz"
+        rm "${PWD}/yabridge-${YABRIDGE_VER}.tar.gz"
+
+        # Directory handling for yabridge
+        mv "${PWD}/yabridge"/* "$HOME/.local/share/yabridge"
+        rm -rf "${PWD}/yabridge"
+
+        # Download and unzip wine (WOW64: still considered experimental, but will work on pure-64bit linux systems)
         wget "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VER}/wine-${WINE_VER}-staging-tkg-amd64-wow64.tar.xz"
 
         # Archive handling for wine
@@ -37,7 +69,6 @@ if [[ "$#" == "1" ]]; then
 
         # Create Link to Yabridge directory
         ln -sf "$HOME/.local/share/yabridge" "$BUNDLE_PATH/yabridge"
-
 
     elif [[ "$1" == "setenv" ]]; then
         echo "" >> $HOME/.bashrc
@@ -56,8 +87,10 @@ if [[ "$#" == "1" ]]; then
         rm -rvf "$HOME/.local/share/yabridge"
 
     else
-        echo "Usage: yavst_setup.sh <argument>"
-        echo "install - Installs the bundle"
+        # Help / usage message
+        echo "Usage: yavst_setup.sh <argument> <multilib/wow64>"
+        echo "install-multilib - Installs the bundle (this is the default option for systems with 32bit libraries installed)"
+        echo "install-wow64 - Installs the bundle (this is the option for systems with a pure 64-bit environment: CAUTION THIS IS STILL EXPERIMENTAL)"
         echo "setenv - Creates the relevant environment variables in $HOME/.bashrc"
         echo "uninstall - Uninstalls the bundle"
 
