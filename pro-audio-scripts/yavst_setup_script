@@ -16,6 +16,16 @@ if [[ "$#" == "1" ]]; then
         # Download and install Yabridge
         wget "https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VER}/yabridge-${YABRIDGE_VER}.tar.gz"
 
+        # Regenerate yabridge install
+        if [[ -d "$BUNDLE_PATH/yabridge" ]]; then
+            rm "$BUNDLE_PATH/yabridge"
+            mkdir -p "$BUNDLE_PATH/yabridge"
+        fi
+
+        if [[ -d "$HOME/.local/share/yabridge" ]]; then
+            rm -rf "$HOME/.local/share/yabridge"
+        fi
+
         # Archive handling for yabridge
         tar -xvzf "${PWD}/yabridge-${YABRIDGE_VER}.tar.gz"
         rm "${PWD}/yabridge-${YABRIDGE_VER}.tar.gz"
@@ -24,8 +34,16 @@ if [[ "$#" == "1" ]]; then
         mv "${PWD}/yabridge"/* "$HOME/.local/share/yabridge"
         rm -rf "${PWD}/yabridge"
 
+        # Create Link to Yabridge directory
+        ln -sf "$HOME/.local/share/yabridge" "$BUNDLE_PATH/yabridge"
+
         # Download and unzip wine (default install of wine, requires a linux distro with 32bit libraries installed)
         wget "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VER}/wine-${WINE_VER}-staging-tkg-amd64.tar.xz"
+
+        # Remove old wine install
+        if [[ -d "$PWD/YaVST" ]]; then
+            rm -rf YaVST/{bin,lib,share,wine-tkg-config.txt}
+        fi
 
         # Archive handling for wine
         tar -xvJf "${PWD}/wine-${WINE_VER}-staging-tkg-amd64.tar.xz"
@@ -35,18 +53,22 @@ if [[ "$#" == "1" ]]; then
         mv "${PWD}/wine-${WINE_VER}-staging-tkg-amd64"/* "$BUNDLE_PATH"
         rm -rf "${PWD}/wine-${WINE_VER}-staging-tkg-amd64"
 
-        # Create Link to Yabridge directory
-        ln -sf "$HOME/.local/share/yabridge" "$BUNDLE_PATH/yabridge"
-
     elif [[ "$1" == "install-wow64" ]]; then
         # Make YaVST bundle directory and wine installation directory
         mkdir -p "$BUNDLE_PATH"
 
-        # Make the yabridge directory
-        mkdir -p "$HOME/.local/share/yabridge"
-
         # Download and install Yabridge
         wget "https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VER}/yabridge-${YABRIDGE_VER}.tar.gz"
+
+        # Regenerate yabridge install
+        if [[ -d "$PWD/YaVST/yabridge" ]]; then
+            rm "$BUNDLE_PATH/yabridge"
+            mkdir -p "$BUNDLE_PATH/yabridge"
+        fi
+
+        if [[ -d "$HOME/.local/share/yabridge" ]]; then
+            rm -rf "$HOME/.local/share/yabridge"
+        fi
 
         # Archive handling for yabridge
         tar -xvzf "${PWD}/yabridge-${YABRIDGE_VER}.tar.gz"
@@ -56,8 +78,16 @@ if [[ "$#" == "1" ]]; then
         mv "${PWD}/yabridge"/* "$HOME/.local/share/yabridge"
         rm -rf "${PWD}/yabridge"
 
+        # Create Link to Yabridge directory
+        ln -sf "$HOME/.local/share/yabridge" "$BUNDLE_PATH/yabridge"
+
         # Download and unzip wine (WOW64: still considered experimental, but will work on pure-64bit linux systems)
         wget "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VER}/wine-${WINE_VER}-staging-tkg-amd64-wow64.tar.xz"
+
+        # Remove old wine install
+        if [[ -d "$PWD/YaVST" ]]; then
+            rm -rf YaVST/{bin,lib,share,wine-tkg-config.txt}
+        fi
 
         # Archive handling for wine
         tar -xvJf "${PWD}/wine-${WINE_VER}-staging-tkg-amd64-wow64.tar.xz"
@@ -66,9 +96,6 @@ if [[ "$#" == "1" ]]; then
         # Directory handling for wine
         mv "${PWD}/wine-${WINE_VER}-staging-tkg-amd64-wow64"/* "$BUNDLE_PATH"
         rm -rf "${PWD}/wine-${WINE_VER}-staging-tkg-amd64-wow64"
-
-        # Create Link to Yabridge directory
-        ln -sf "$HOME/.local/share/yabridge" "$BUNDLE_PATH/yabridge"
 
     elif [[ "$1" == "setenv" ]]; then
         echo "" >> $HOME/.bashrc
