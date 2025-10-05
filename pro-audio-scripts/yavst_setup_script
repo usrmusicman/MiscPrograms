@@ -10,21 +10,21 @@ if [[ "$#" == "1" ]]; then
         # Make YaVST bundle directory and wine installation directory
         mkdir -p "$BUNDLE_PATH"
 
-        # Make the yabridge directory
-        mkdir -p "$HOME/.local/share/yabridge"
-
         # Download and install Yabridge
         wget "https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VER}/yabridge-${YABRIDGE_VER}.tar.gz"
 
         # Regenerate yabridge install
         if [[ -d "$BUNDLE_PATH/yabridge" ]]; then
-            rm "$BUNDLE_PATH/yabridge"
-            mkdir -p "$BUNDLE_PATH/yabridge"
+            rm -rf "$BUNDLE_PATH/yabridge"
         fi
 
         if [[ -d "$HOME/.local/share/yabridge" ]]; then
             rm -rf "$HOME/.local/share/yabridge"
         fi
+
+        # Make Yabridge Directories
+        mkdir -p "$BUNDLE_PATH/yabridge"
+        mkdir -p "$HOME/.local/share/yabridge"
 
         # Archive handling for yabridge
         tar -xvzf "${PWD}/yabridge-${YABRIDGE_VER}.tar.gz"
@@ -62,13 +62,16 @@ if [[ "$#" == "1" ]]; then
 
         # Regenerate yabridge install
         if [[ -d "$PWD/YaVST/yabridge" ]]; then
-            rm "$BUNDLE_PATH/yabridge"
-            mkdir -p "$BUNDLE_PATH/yabridge"
+            rm -rf "$BUNDLE_PATH/yabridge"
         fi
 
         if [[ -d "$HOME/.local/share/yabridge" ]]; then
             rm -rf "$HOME/.local/share/yabridge"
         fi
+
+        # Make Yabridge Directories
+        mkdir -p "$BUNDLE_PATH/yabridge"
+        mkdir -p "$HOME/.local/share/yabridge"
 
         # Archive handling for yabridge
         tar -xvzf "${PWD}/yabridge-${YABRIDGE_VER}.tar.gz"
@@ -107,7 +110,7 @@ if [[ "$#" == "1" ]]; then
         echo "export WINESERVER=\"\$YAVST_PATH/bin/wineserver\"" >> $HOME/.bashrc
         echo "export WINELOADER=\"\$YAVST_PATH/bin/wine\"" >> $HOME/.bashrc
         echo "export WINEDLLPATH=\"\$YAVST_PATH/lib/wine/fakedlls\"" >> $HOME/.bashrc
-        echo "export LD_LIBRARY_PATH=\"\$YAVST_PATH/lib:\$LD_LIBRARY_PATH\"" >> $HOME/.bashrc
+        echo "export LD_LIBRARY_PATH=\"\$YAVST_PATH/lib:\$HOME/.local/share/yabridge:\$LD_LIBRARY_PATH\"" >> $HOME/.bashrc
 
     elif [[ "$1" == "uninstall" ]]; then
         rm -rvf "$BUNDLE_PATH"
