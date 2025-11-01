@@ -104,13 +104,12 @@ if [[ "$#" == "1" ]]; then
         echo "" >> $HOME/.bashrc
         echo "## Setup Yabridge VST Environment (For Bazzite and other immutable distros)" >> $HOME/.bashrc
         echo "declare -r BUNDLE_PATH=\"$BUNDLE_PATH\"" >> $HOME/.bashrc
-        echo "export YAVST_PATH=\"\$BUNDLE_PATH\"" >> $HOME/.bashrc
-        echo "export WINEVERPATH=\"\$YAVST_PATH\"" >> $HOME/.bashrc
-        echo "export PATH=\"\$YAVST_PATH/bin:\$PATH\"" >> $HOME/.bashrc
-        echo "export WINESERVER=\"\$YAVST_PATH/bin/wineserver\"" >> $HOME/.bashrc
-        echo "export WINELOADER=\"\$YAVST_PATH/bin/wine\"" >> $HOME/.bashrc
-        echo "export WINEDLLPATH=\"\$YAVST_PATH/lib/wine/fakedlls\"" >> $HOME/.bashrc
-        echo "export LD_LIBRARY_PATH=\"\$YAVST_PATH/lib:\$HOME/.local/share/yabridge:\$LD_LIBRARY_PATH\"" >> $HOME/.bashrc
+        echo "export WINEVERPATH=\"\$BUNDLE_PATH\"" >> $HOME/.bashrc
+        echo "export PATH=\"\$BUNDLE_PATH/bin:\$HOME/.local/share/yabridge:\$PATH\"" >> $HOME/.bashrc
+        echo "export WINEDLLPATH=\"\$BUNDLE_PATH/lib/wine/fakedlls\"" >> $HOME/.bashrc
+        echo "export WINELOADER=\"\$BUNDLE_PATH/bin/wine\"" >> $HOME/.bashrc
+        echo "export WINESERVER=\"\$BUNDLE_PATH/bin/wineserver\"" >> $HOME/.bashrc
+        echo "export LD_LIBRARY_PATH=\"\$BUNDLE_PATH/lib:\$LD_LIBRARY_PATH\"" >> $HOME/.bashrc
 
     elif [[ "$1" == "uninstall" ]]; then
         rm -rvf "$BUNDLE_PATH"
