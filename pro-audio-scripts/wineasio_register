@@ -1,7 +1,7 @@
 #!/usr/bin/bash
 
 # Path to where YaVST winebuild resides.
-PATH_TO_WINE_BUILD="${HOME}/.plugins/YaVST"
+PATH_TO_WINE_BUILD="${HOME}/.audioplugins/YaVST"
 
 # Wineasio binary package
 WINEASIO_PKG="wineasio-1.3.0-2-x86_64.pkg.tar.zst"
