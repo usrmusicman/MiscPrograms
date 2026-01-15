@@ -113,7 +113,7 @@ if [[ "$#" == "1" ]]; then
         WINEASIO_PKG="wineasio-${WINEASIO_VER}-${PKGREL}.fc${FEDCORE_VERSION}.x86_64.rpm"
 
         # Download archive
-        wget -P ${PWD} "https://repos.fyralabs.com/terra42/${WINEASIO_PKG}"
+        wget -P ${PWD} "https://repos.fyralabs.com/terra${FEDCORE_VERSION}/${WINEASIO_PKG}"
 
         # Extract archive
         rpm2cpio "${WINEASIO_PKG}" | cpio -idm
