@@ -1,7 +1,7 @@
 #!/bin/sh
 
 # Path for the YaVST bundle
-BUNDLE_PATH="$HOME/.audioplugins/YaVST"
+BUNDLE_PATH="$HOME/.local/bin/YaVST"
 WINE_VER=9.21
 YABRIDGE_VER=5.1.1
 
@@ -11,7 +11,7 @@ if [[ "$#" == "1" ]]; then
         mkdir -p "$BUNDLE_PATH"
 
         # Download and install Yabridge
-        wget "https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VER}/yabridge-${YABRIDGE_VER}.tar.gz"
+        wget -P ${PWD} "https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VER}/yabridge-${YABRIDGE_VER}.tar.gz"
 
         # Regenerate yabridge install
         if [[ -d "$BUNDLE_PATH/yabridge" ]]; then
@@ -23,7 +23,6 @@ if [[ "$#" == "1" ]]; then
         fi
 
         # Make Yabridge Directories
-        mkdir -p "$BUNDLE_PATH/yabridge"
         mkdir -p "$HOME/.local/share/yabridge"
 
         # Archive handling for yabridge
@@ -38,7 +37,7 @@ if [[ "$#" == "1" ]]; then
         ln -sf "$HOME/.local/share/yabridge" "$BUNDLE_PATH/yabridge"
 
         # Download and unzip wine (default install of wine, requires a linux distro with 32bit libraries installed)
-        wget "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VER}/wine-${WINE_VER}-staging-tkg-amd64.tar.xz"
+        wget -P ${PWD} "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VER}/wine-${WINE_VER}-staging-tkg-amd64.tar.xz"
 
         # Remove old wine install
         if [[ -d "$PWD/YaVST" ]]; then
@@ -58,7 +57,7 @@ if [[ "$#" == "1" ]]; then
         mkdir -p "$BUNDLE_PATH"
 
         # Download and install Yabridge
-        wget "https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VER}/yabridge-${YABRIDGE_VER}.tar.gz"
+        wget -P ${PWD} "https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VER}/yabridge-${YABRIDGE_VER}.tar.gz"
 
         # Regenerate yabridge install
         if [[ -d "$PWD/YaVST/yabridge" ]]; then
@@ -70,7 +69,6 @@ if [[ "$#" == "1" ]]; then
         fi
 
         # Make Yabridge Directories
-        mkdir -p "$BUNDLE_PATH/yabridge"
         mkdir -p "$HOME/.local/share/yabridge"
 
         # Archive handling for yabridge
@@ -85,7 +83,7 @@ if [[ "$#" == "1" ]]; then
         ln -sf "$HOME/.local/share/yabridge" "$BUNDLE_PATH/yabridge"
 
         # Download and unzip wine (WOW64: still considered experimental, but will work on pure-64bit linux systems)
-        wget "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VER}/wine-${WINE_VER}-staging-tkg-amd64-wow64.tar.xz"
+        wget -P ${PWD} "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VER}/wine-${WINE_VER}-staging-tkg-amd64-wow64.tar.xz"
 
         # Remove old wine install
         if [[ -d "$PWD/YaVST" ]]; then
@@ -99,6 +97,62 @@ if [[ "$#" == "1" ]]; then
         # Directory handling for wine
         mv "${PWD}/wine-${WINE_VER}-staging-tkg-amd64-wow64"/* "$BUNDLE_PATH"
         rm -rf "${PWD}/wine-${WINE_VER}-staging-tkg-amd64-wow64"
+
+    elif [[ "$1" == "install-wineasio" ]]; then
+
+        # Wineasio version
+        WINEASIO_VER="0:1.3.0"
+
+        # Fedora version
+        FEDCORE_VERSION="42"
+
+        # Package release
+        PKGREL="1"
+
+        # Wineasio package
+        WINEASIO_PKG="wineasio-${WINEASIO_VER}-${PKGREL}.fc${FEDCORE_VERSION}.x86_64.rpm"
+
+        # Download archive
+        wget -P ${PWD} "https://repos.fyralabs.com/terra42/${WINEASIO_PKG}"
+
+        # Extract archive
+        rpm2cpio "${WINEASIO_PKG}" | cpio -idm
+
+        # Move WineASIO binary
+        cp -rf "${PWD}/usr/lib64" "${BUNDLE_PATH}"
+
+        # Remove leftovers
+        rm "${PWD}/${WINEASIO_PKG}"
+        rm -rf "${PWD}/usr"
+
+        # read WINEPREFIX from environment, with fallback if unset
+        WINEPREFIX=${WINEPREFIX:=~/.wine}
+
+        # exit if any command fails
+        set -e
+
+        # make sure the WINEPREFIX directory exists
+        if [ ! -d "${WINEPREFIX}" ]; then
+            wineboot -u
+        fi
+
+        # define possible locations for wineasio DLLs
+
+        u64=(
+        "${BUNDLE_PATH}/lib/wine/x86_64-unix/wineasio64.dll.so"
+        "${BUNDLE_PATH}/lib64/wine/x86_64-unix/wineasio64.dll.so"
+        "${BUNDLE_PATH}/lib/x86_64-linux-gnu/wine/x86_64-unix/wineasio64.dll.so"
+        )
+
+        # try to register 64bit DLL
+        for u in ${u64[@]}; do
+            w=$(echo ${u} | sed -e 's|/x86_64-unix/wineasio64.dll.so|/x86_64-windows/wineasio64.dll|g')
+            if [ -e "${u}" ] && [ -e "${w}" ]; then
+                cp -v "${w}" "${WINEPREFIX}/drive_c/windows/system32"
+                wine64 regsvr32 "${u}"
+                break
+            fi
+        done
 
     elif [[ "$1" == "setenv" ]]; then
         echo "" >> $HOME/.bashrc
@@ -120,6 +174,7 @@ if [[ "$#" == "1" ]]; then
         echo "Usage: yavst_setup.sh <argument> <multilib/wow64>"
         echo "install-multilib - Installs the bundle (this is the default option for systems with 32bit libraries installed)"
         echo "install-wow64 - Installs the bundle (this is the option for systems with a pure 64-bit environment: CAUTION THIS IS STILL EXPERIMENTAL)"
+        echo "install-wineasio - Installs and configures wineasio (This is for the default wineprefix)"
         echo "setenv - Creates the relevant environment variables in $HOME/.bashrc"
         echo "uninstall - Uninstalls the bundle"
 
