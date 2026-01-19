@@ -1,186 +1,415 @@
-#!/bin/sh
+#!/usr/bin/env bash
+# YaVST Control Panel using YAD - Improved Version
+set -Eeuo pipefail
+IFS=$'\n\t'
 
-# Path for the YaVST bundle
+# -------------------------
+# Global Variables
+# -------------------------
+HOME="${HOME:-/home/$(id -un)}"
 BUNDLE_PATH="$HOME/.local/bin/YaVST"
-WINE_VER=9.21
-YABRIDGE_VER=5.1.1
+DOWNLOAD_PATH="$HOME/Downloads"
+YABRIDGE_ROOT="$BUNDLE_PATH/yabridge"
+YABRIDGECTL_PATH="$YABRIDGE_ROOT/yabridgectl"
 
-if [[ "$#" == "1" ]]; then
-    if [[ "$1" == "install-multilib" ]]; then
-        # Make YaVST bundle directory and wine installation directory
-        mkdir -p "$BUNDLE_PATH"
+# Versions
+WINE_VER="${WINE_VER:-9.21}"
+YABRIDGE_VER="${YABRIDGE_VER:-5.1.1}"
+WINEASIO_VER="1.3.0"
+WINEASIO_REV="2.1"
+WINE_BUILD_NAME="staging-tkg-amd64"
 
-        # Download and install Yabridge
-        wget -P ${PWD} "https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VER}/yabridge-${YABRIDGE_VER}.tar.gz"
+TAR_FLAGS_GZ="-xzf"
+TAR_FLAGS_XZ="-xJf"
+TAR_FLAGS_ZST="-I zstd -xf"
 
-        # Regenerate yabridge install
-        if [[ -d "$BUNDLE_PATH/yabridge" ]]; then
-            rm -rf "$BUNDLE_PATH/yabridge"
+mkdir -p "$BUNDLE_PATH" "$DOWNLOAD_PATH"
+
+# -------------------------
+# Helper Functions
+# -------------------------
+log_msg() {
+    echo -e "\e[1;34m[$(date '+%H:%M:%S')] $* \e[0m"
+}
+
+error_exit() {
+    yad --info --title="YaVST Error" --text="$*"
+    exit 1
+}
+
+run_process() {
+    local prog="$1"
+    shift
+    "$prog" "$@" || error_exit "Command failed: $prog $*"
+}
+
+download_file() {
+    local url="$1"
+    local out="$2"
+    local retries=3
+    [[ -f "$out" ]] && return
+    log_msg "Downloading $url..."
+    for i in $(seq 1 $retries); do
+        if wget -c --show-progress -O "$out" "$url"; then
+            return
+        else
+            log_msg "Download attempt $i failed, retrying..."
+            sleep 2
         fi
+    done
+    error_exit "Download failed after $retries attempts: $url"
+}
 
-        if [[ -d "$HOME/.local/share/yabridge" ]]; then
-            rm -rf "$HOME/.local/share/yabridge"
-        fi
+ensure_source_line() {
+    local rc_file="$1"
+    local source_line="$2"
+    local header="$3"
 
-        # Make Yabridge Directories
-        mkdir -p "$HOME/.local/share/yabridge"
+    [[ -f "$rc_file" ]] || return 0
 
-        # Archive handling for yabridge
-        tar -xvzf "${PWD}/yabridge-${YABRIDGE_VER}.tar.gz"
-        rm "${PWD}/yabridge-${YABRIDGE_VER}.tar.gz"
-
-        # Directory handling for yabridge
-        mv "${PWD}/yabridge"/* "$HOME/.local/share/yabridge"
-        rm -rf "${PWD}/yabridge"
-
-        # Create Link to Yabridge directory
-        ln -sf "$HOME/.local/share/yabridge" "$BUNDLE_PATH/yabridge"
-
-        # Download and unzip wine (default install of wine, requires a linux distro with 32bit libraries installed)
-        wget -P ${PWD} "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VER}/wine-${WINE_VER}-staging-tkg-amd64.tar.xz"
-
-        # Remove old wine install
-        if [[ -d "$PWD/YaVST" ]]; then
-            rm -rf YaVST/{bin,lib,share,wine-tkg-config.txt}
-        fi
-
-        # Archive handling for wine
-        tar -xvJf "${PWD}/wine-${WINE_VER}-staging-tkg-amd64.tar.xz"
-        rm "${PWD}/wine-${WINE_VER}-staging-tkg-amd64.tar.xz"
-
-        # Directory handling for wine
-        mv "${PWD}/wine-${WINE_VER}-staging-tkg-amd64"/* "$BUNDLE_PATH"
-        rm -rf "${PWD}/wine-${WINE_VER}-staging-tkg-amd64"
-
-    elif [[ "$1" == "install-wow64" ]]; then
-        # Make YaVST bundle directory and wine installation directory
-        mkdir -p "$BUNDLE_PATH"
-
-        # Download and install Yabridge
-        wget -P ${PWD} "https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VER}/yabridge-${YABRIDGE_VER}.tar.gz"
-
-        # Regenerate yabridge install
-        if [[ -d "$PWD/YaVST/yabridge" ]]; then
-            rm -rf "$BUNDLE_PATH/yabridge"
-        fi
-
-        if [[ -d "$HOME/.local/share/yabridge" ]]; then
-            rm -rf "$HOME/.local/share/yabridge"
-        fi
-
-        # Make Yabridge Directories
-        mkdir -p "$HOME/.local/share/yabridge"
-
-        # Archive handling for yabridge
-        tar -xvzf "${PWD}/yabridge-${YABRIDGE_VER}.tar.gz"
-        rm "${PWD}/yabridge-${YABRIDGE_VER}.tar.gz"
-
-        # Directory handling for yabridge
-        mv "${PWD}/yabridge"/* "$HOME/.local/share/yabridge"
-        rm -rf "${PWD}/yabridge"
-
-        # Create Link to Yabridge directory
-        ln -sf "$HOME/.local/share/yabridge" "$BUNDLE_PATH/yabridge"
-
-        # Download and unzip wine (WOW64: still considered experimental, but will work on pure-64bit linux systems)
-        wget -P ${PWD} "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VER}/wine-${WINE_VER}-staging-tkg-amd64-wow64.tar.xz"
-
-        # Remove old wine install
-        if [[ -d "$PWD/YaVST" ]]; then
-            rm -rf YaVST/{bin,lib,share,wine-tkg-config.txt}
-        fi
-
-        # Archive handling for wine
-        tar -xvJf "${PWD}/wine-${WINE_VER}-staging-tkg-amd64-wow64.tar.xz"
-        rm "${PWD}/wine-${WINE_VER}-staging-tkg-amd64-wow64.tar.xz"
-
-        # Directory handling for wine
-        mv "${PWD}/wine-${WINE_VER}-staging-tkg-amd64-wow64"/* "$BUNDLE_PATH"
-        rm -rf "${PWD}/wine-${WINE_VER}-staging-tkg-amd64-wow64"
-
-    elif [[ "$1" == "install-wineasio" ]]; then
-
-        # Wineasio version
-        WINEASIO_VER="0:1.3.0"
-
-        # Fedora version
-        FEDCORE_VERSION="42"
-
-        # Package release
-        PKGREL="1"
-
-        # Wineasio package
-        WINEASIO_PKG="wineasio-${WINEASIO_VER}-${PKGREL}.fc${FEDCORE_VERSION}.x86_64.rpm"
-
-        # Download archive
-        wget -P ${PWD} "https://repos.fyralabs.com/terra${FEDCORE_VERSION}/${WINEASIO_PKG}"
-
-        # Extract archive
-        rpm2cpio "${WINEASIO_PKG}" | cpio -idm
-
-        # Move WineASIO binary
-        cp -rf "${PWD}/usr/lib64" "${BUNDLE_PATH}"
-
-        # Remove leftovers
-        rm "${PWD}/${WINEASIO_PKG}"
-        rm -rf "${PWD}/usr"
-
-        # read WINEPREFIX from environment, with fallback if unset
-        WINEPREFIX=${WINEPREFIX:=~/.wine}
-
-        # exit if any command fails
-        set -e
-
-        # make sure the WINEPREFIX directory exists
-        if [ ! -d "${WINEPREFIX}" ]; then
-            wineboot -u
-        fi
-
-        # define possible locations for wineasio DLLs
-
-        u64=(
-        "${BUNDLE_PATH}/lib/wine/x86_64-unix/wineasio64.dll.so"
-        "${BUNDLE_PATH}/lib64/wine/x86_64-unix/wineasio64.dll.so"
-        "${BUNDLE_PATH}/lib/x86_64-linux-gnu/wine/x86_64-unix/wineasio64.dll.so"
-        )
-
-        # try to register 64bit DLL
-        for u in ${u64[@]}; do
-            w=$(echo ${u} | sed -e 's|/x86_64-unix/wineasio64.dll.so|/x86_64-windows/wineasio64.dll|g')
-            if [ -e "${u}" ] && [ -e "${w}" ]; then
-                cp -v "${w}" "${WINEPREFIX}/drive_c/windows/system32"
-                wine64 regsvr32 "${u}"
-                break
-            fi
-        done
-
-    elif [[ "$1" == "setenv" ]]; then
-        echo "" >> $HOME/.bashrc
-        echo "## Setup Yabridge VST Environment (For Bazzite and other immutable distros)" >> $HOME/.bashrc
-        echo "declare -r BUNDLE_PATH=\"$BUNDLE_PATH\"" >> $HOME/.bashrc
-        echo "export WINEVERPATH=\"\$BUNDLE_PATH\"" >> $HOME/.bashrc
-        echo "export PATH=\"\$BUNDLE_PATH/bin:\$HOME/.local/share/yabridge:\$PATH\"" >> $HOME/.bashrc
-        echo "export WINEDLLPATH=\"\$BUNDLE_PATH/lib/wine/fakedlls\"" >> $HOME/.bashrc
-        echo "export WINELOADER=\"\$BUNDLE_PATH/bin/wine\"" >> $HOME/.bashrc
-        echo "export WINESERVER=\"\$BUNDLE_PATH/bin/wineserver\"" >> $HOME/.bashrc
-        echo "export LD_LIBRARY_PATH=\"\$BUNDLE_PATH/lib:\$LD_LIBRARY_PATH\"" >> $HOME/.bashrc
-
-    elif [[ "$1" == "uninstall" ]]; then
-        rm -rvf "$BUNDLE_PATH"
-        rm -rvf "$HOME/.local/share/yabridge"
-
+    if ! grep -Fqx "$source_line" "$rc_file"; then
+        {
+            echo
+            echo "$header"
+            echo "$source_line"
+        } >> "$rc_file"
+        log_msg "Added YaVST env to $(basename "$rc_file")"
     else
-        # Help / usage message
-        echo "Usage: yavst_setup.sh <argument> <multilib/wow64>"
-        echo "install-multilib - Installs the bundle (this is the default option for systems with 32bit libraries installed)"
-        echo "install-wow64 - Installs the bundle (this is the option for systems with a pure 64-bit environment: CAUTION THIS IS STILL EXPERIMENTAL)"
-        echo "install-wineasio - Installs and configures wineasio (This is for the default wineprefix)"
-        echo "setenv - Creates the relevant environment variables in $HOME/.bashrc"
-        echo "uninstall - Uninstalls the bundle"
+        log_msg "YaVST env already present in $(basename "$rc_file")"
+    fi
+}
 
+extract_archive() {
+    local file="$1"
+    local dest="$2"
+    mkdir -p "$dest"
+    case "$file" in
+        *.tar.gz) tar $TAR_FLAGS_GZ "$file" -C "$dest" --strip-components=1 ;;
+        *.tar.xz) tar $TAR_FLAGS_XZ "$file" -C "$dest" --strip-components=1 ;;
+        *.pkg.tar.zst) tar $TAR_FLAGS_ZST "$file" -C "$dest" --exclude='.*' ;;
+        *) error_exit "Unknown archive type: $file" ;;
+    esac
+}
+
+# -------------------------
+# Core Functions
+# -------------------------
+cleanup_old_wine() {
+    log_msg "Cleaning up old Wine installation..."
+    rm -rf "$BUNDLE_PATH/bin" "$BUNDLE_PATH/lib" "$BUNDLE_PATH/share"
+    sleep 2
+}
+
+cleanup_old_yabridge() {
+    log_msg "Cleaning up old Yabridge installation..."
+    rm -rf "$BUNDLE_PATH/yabridge"
+    sleep 2
+}
+
+edit_yabridgectl_config() {
+    local config_file="$HOME/.config/yabridgectl/config.toml"
+    [[ -f "$config_file" ]] || { yad --error --title="YaVST" --text="Config file not found at $config_file"; return; }
+
+    if command -v xdg-open >/dev/null; then
+        xdg-open "$config_file" || yad --error --title="YaVST" --text="Failed to open config file with default editor."
+    else
+        yad --error --title="YaVST" --text="Cannot edit config: xdg-open not found or no default editor set."
+    fi
+}
+
+install_yabridge() {
+    local dest="$BUNDLE_PATH/yabridge"
+    local file="$DOWNLOAD_PATH/yabridge-${YABRIDGE_VER}.tar.gz"
+    download_file "https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VER}/yabridge-${YABRIDGE_VER}.tar.gz" "$file"
+    cleanup_old_yabridge
+    extract_archive "$file" "$dest"
+
+    # Remove any .md files
+    find "$dest" -name "*.md" -type f -delete
+
+    # Create or replace symlink
+    [[ -L "$HOME/.local/share/yabridge" || -e "$HOME/.local/share/yabridge" ]] && rm -rf "$HOME/.local/share/yabridge"
+    ln -s "$dest" "$HOME/.local/share/yabridge"
+
+    # chmod safer permissions
+    chmod -R u+rwX,go-rX "$dest"
+}
+
+detect_wine_bin() {
+    local bins=("$BUNDLE_PATH/bin/wine64" "$BUNDLE_PATH/bin/wine")
+    for b in "${bins[@]}"; do
+        [[ -x "$b" ]] && echo "$b" && return
+    done
+    error_exit "Wine executable not found in $BUNDLE_PATH/bin. Install Wine first."
+}
+
+configure_winasio() {
+    # Check required commands
+    for cmd in wget tar zstd file; do
+        command -v "$cmd" >/dev/null || { yad --info --title="YaVST" --text="$cmd not found, please install it"; return; }
+    done
+
+    # Auto-detect Wine prefixes
+    local candidates=("$HOME/.wine" "$HOME/win32" "$HOME/win64")
+    local WINEPREFIX_LIST=()
+    for p in "${candidates[@]}"; do
+        [[ -d "$p/drive_c/windows/system32" ]] && WINEPREFIX_LIST+=("$p")
+    done
+
+    local WINEPREFIX
+    if [[ ${#WINEPREFIX_LIST[@]} -eq 0 ]]; then
+        WINEPREFIX="$HOME/.wine"
+        mkdir -p "$WINEPREFIX/drive_c/windows/system32/"
+    elif [[ ${#WINEPREFIX_LIST[@]} -eq 1 ]]; then
+        WINEPREFIX="${WINEPREFIX_LIST[0]}"
+    else
+        # Let user pick one
+        local options=()
+        for i in "${!WINEPREFIX_LIST[@]}"; do
+            options+=("$i" "${WINEPREFIX_LIST[$i]}")
+        done
+        local sel
+        sel=$(yad --list \
+            --title="Select WINEPREFIX" \
+            --column="Index" \
+            --column="WINEPREFIX" \
+            --separator="|" \
+            "${options[@]}") || return
+        [[ -z "$sel" ]] && return
+        local idx=$(echo "$sel" | cut -d'|' -f1)
+        WINEPREFIX="${WINEPREFIX_LIST[$idx]}"
     fi
 
-else
-    echo "Please type in a valid argument for this script"
+    mkdir -p "$WINEPREFIX/drive_c/windows/system32/"
 
-fi
+    # Download WineASIO package
+    local WINEASIO_PKG="wineasio-${WINEASIO_VER}-${WINEASIO_REV}-x86_64.pkg.tar.zst"
+    local archive="$DOWNLOAD_PATH/$WINEASIO_PKG"
+    [[ -f "$archive" ]] || download_file "https://builds.garudalinux.org/repos/chaotic-aur/x86_64/$WINEASIO_PKG" "$archive"
+
+    # Extract archive preserving paths
+    local temp="$BUNDLE_PATH/wineasio_temp"
+    rm -rf "$temp"
+    mkdir -p "$temp"
+    tar -I zstd -xf "$archive" -C "$temp"
+
+    # Detect prefix architecture (default to 64-bit)
+    local ARCH="win64"
+    if [[ -f "$WINEPREFIX/drive_c/windows/system32/kernel32.dll" ]]; then
+        file "$WINEPREFIX/drive_c/windows/system32/kernel32.dll" | grep -q "PE32 executable (DLL)" && ARCH="win32"
+    fi
+
+    # Select DLLs
+    local DLL_UNIX DLL_WIN TARGET_DIR
+    if [[ "$ARCH" == "win64" ]]; then
+        DLL_UNIX=$(find "$temp/usr/lib/wine/x86_64-unix" -name "wineasio64.dll.so" | head -n1)
+        DLL_WIN=$(find "$temp/usr/lib/wine/x86_64-windows" -name "wineasio64.dll" | head -n1)
+        TARGET_DIR="$BUNDLE_PATH/lib/wine/x86_64-unix"
+    else
+        DLL_UNIX=$(find "$temp/usr/lib/wine/i386-unix" -name "wineasio.dll.so" | head -n1)
+        DLL_WIN=$(find "$temp/usr/lib/wine/i386-windows" -name "wineasio.dll" | head -n1)
+        TARGET_DIR="$BUNDLE_PATH/lib/wine/i386-unix"
+    fi
+
+    [[ -z "$DLL_UNIX" || -z "$DLL_WIN" ]] && { error_exit "WineASIO DLLs not found in archive!"; rm -rf "$temp"; return; }
+
+    # Ensure target directory exists and is a directory
+    if [[ -e "$TARGET_DIR" && ! -d "$TARGET_DIR" ]]; then
+        rm -f "$TARGET_DIR"
+    fi
+    mkdir -p "$TARGET_DIR"
+
+    # Copy files
+    cp -v "$DLL_WIN" "$WINEPREFIX/drive_c/windows/system32/"
+    cp -v "$DLL_UNIX" "$TARGET_DIR/"
+
+    # Set environment variable so DAWs can see WineASIO
+    export WINEPREFIX="$WINEPREFIX"
+    export WINEPATH="$TARGET_DIR"
+
+    # Clean up temporary folder
+    rm -rf "$temp"
+
+    yad --info --title="WineASIO" --text="WineASIO installed successfully in WINEPREFIX:\n$WINEPREFIX\nMake sure your DAW uses this Wine prefix."
+}
+
+install_wine_bundle() {
+    local suffix="$1"
+    local file="wine-${WINE_VER}-${WINE_BUILD_NAME}${suffix}.tar.xz"
+    download_file "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VER}/$file" "$DOWNLOAD_PATH/$file"
+    cleanup_old_wine
+    extract_archive "$DOWNLOAD_PATH/$file" "$BUNDLE_PATH"
+
+    rm -f "$BUNDLE_PATH/wine-tkg-config.txt"
+    chmod u+rwX,go-rX "$BUNDLE_PATH/bin"/*
+
+    # Install Yabridge immediately after wine install
+    install_yabridge
+}
+
+rescan_vsts() {
+    run_process "$YABRIDGECTL_PATH" sync
+    yad --info --title="YaVST" --text="VST rescan complete."
+}
+
+set_env() {
+    local CONFIG_DIR="$HOME/.config/yavst"
+    local ENV_FILE="$CONFIG_DIR/env.sh"
+
+    log_msg "Configuring YaVST environment…"
+
+    mkdir -p "$CONFIG_DIR"
+
+    # Canonical env (bash/zsh)
+    cat > "$ENV_FILE" <<EOF
+#!/usr/bin/env bash
+# YaVST / Yabridge Environment
+
+export WINEPREFIX="\${WINEPREFIX:-$HOME/.wine}"
+declare -r BUNDLE_PATH="$BUNDLE_PATH"
+
+export PATH="\$BUNDLE_PATH/bin:\$HOME/.local/share/yabridge:\$PATH"
+export WINEDLLPATH="\$BUNDLE_PATH/lib/wine:\$BUNDLE_PATH/lib/wine/fakedlls"
+export WINELOADER="\$BUNDLE_PATH/bin/wine"
+export WINESERVER="\$BUNDLE_PATH/bin/wineserver"
+export LD_LIBRARY_PATH="\$BUNDLE_PATH/lib:\$LD_LIBRARY_PATH"
+EOF
+
+    chmod +x "$ENV_FILE"
+
+    # Bash
+    ensure_source_line \
+        "$HOME/.bashrc" \
+        '[ -f "$HOME/.config/yavst/env.sh" ] && source "$HOME/.config/yavst/env.sh"' \
+        "## YaVST Environment"
+
+    # Zsh
+    ensure_source_line \
+        "$HOME/.zshrc" \
+        '[ -f "$HOME/.config/yavst/env.sh" ] && source "$HOME/.config/yavst/env.sh"' \
+        "## YaVST Environment"
+
+    # Fish (if installed)
+    if command -v fish >/dev/null; then
+        write_fish_env
+    fi
+
+    yad --info \
+        --title="YaVST" \
+        --text="YaVST environment configured for Bash/Zsh/Fish.\n\nRestart your shell to apply."
+}
+
+unset_env() {
+    rm -rf "$HOME/.config/yavst"
+
+    sed -i '/## YaVST Environment/,+1d' "$HOME/.bashrc" 2>/dev/null || true
+    sed -i '/## YaVST Environment/,+1d' "$HOME/.zshrc" 2>/dev/null || true
+
+    rm -f "$HOME/.config/fish/yavst.fish"
+    sed -i '/# YaVST Environment/,+1d' "$HOME/.config/fish/config.fish" 2>/dev/null || true
+
+    yad --info \
+        --title="YaVST" \
+        --text="YaVST environment removed from all supported shells.\n\nRestart your shell."
+}
+
+# -------------------------
+# VST Directory Management
+# -------------------------
+select_vst_dir() {
+    local dir=""
+    while true; do
+        if [[ "${XDG_CURRENT_DESKTOP:-}" == *KDE* || "${DESKTOP_SESSION:-}" == *plasma* ]]; then
+            command -v kdialog &>/dev/null && dir=$(kdialog --getexistingdirectory "$HOME" "Select VST Directory") || \
+            dir=$(zenity --file-selection --directory --title="Select VST Directory") || return
+        else
+            dir=$(zenity --file-selection --directory --title="Select VST Directory") || return
+        fi
+
+        [[ -d "$dir" ]] && { echo "$dir"; break; }
+        yad --error --title="YaVST" --text="Invalid directory: '$dir'. Please try again."
+        sleep 0.2
+    done
+}
+
+add_vst_dir() {
+    local dir
+    dir=$(select_vst_dir) || return
+    run_process "$YABRIDGECTL_PATH" add "$dir"
+    run_process "$YABRIDGECTL_PATH" sync
+    yad --info --title="YaVST" --text="Added VST directory:\n$dir"
+}
+
+remove_vst_dir() {
+    mapfile -t dirs < <("$YABRIDGECTL_PATH" list)
+    [[ ${#dirs[@]} -gt 0 ]] || { yad --info --title="YaVST" --text="No VST directories to remove"; return; }
+
+    local options=()
+    for i in "${!dirs[@]}"; do
+        options+=("$i" "${dirs[$i]}")
+    done
+
+    local sel
+    sel=$(yad --list \
+        --title="Remove VST directory" \
+        --column="Index" \
+        --column="Directory" \
+        --separator="|" \
+        "${options[@]}") || return
+
+    [[ -z "$sel" ]] && return
+
+    local idx
+    idx=$(echo "$sel" | cut -d'|' -f1)
+    [[ -n "${dirs[$idx]:-}" ]] || { yad --error --title="YaVST" --text="Invalid selection"; return; }
+
+    "$YABRIDGECTL_PATH" rm "${dirs[$idx]}"
+    "$YABRIDGECTL_PATH" sync
+    yad --info --title="YaVST" --text="Removed VST directory:\n${dirs[$idx]}"
+}
+
+# -------------------------
+# Main GUI Loop
+# -------------------------
+while true; do
+    set +e
+    action=$(yad \
+        --width=500 \
+        --height=450 \
+        --title="YaVST Control Panel" \
+        --list \
+        --column="Action" \
+        --print-column=1 \
+        --separator="" \
+        "Install YaVST (Multilib)" \
+        "Install YaVST (WOW64)" \
+        "Register WineASIO in Wine Prefix" \
+        "Add VST Directory" \
+        "Remove VST Directory" \
+        "Rescan VSTs" \
+        "Edit yabridgectl Config" \
+        "Set YaVST Environment" \
+        "Remove YaVST Environment" \
+        "Exit" \
+        --button="Ok":0 \
+        --button="Cancel":1
+    )
+    ret=$?
+    set -e
+
+    [[ $ret -ne 0 || -z "$action" ]] && continue
+
+    case "$action" in
+        "Install YaVST (Multilib)") install_wine_bundle "" ;;
+        "Install YaVST (WOW64)") install_wine_bundle "-wow64" ;;
+        "Register WineASIO in Wine Prefix") configure_winasio ;;
+        "Add VST Directory") add_vst_dir ;;
+        "Remove VST Directory") remove_vst_dir ;;
+        "Rescan VSTs") rescan_vsts ;;
+        "Edit yabridgectl Config") edit_yabridgectl_config ;;
+        "Set YaVST Environment") set_env ;;
+        "Remove YaVST Environment") unset_env ;;
+        "Exit") break ;;
+        *) yad --error --title="YaVST" --text="Unknown action:\n$action" ;;
+    esac
+done
