@@ -1,0 +1,216 @@
+#!/bin/bash
+# Arch Linux Multimedia Control Center
+# Dependencies: scxctl, pw-metadata, pw-jack, kdialog, zenity
+
+# ----------------------------
+# GUI Detection
+# ----------------------------
+if command -v kdialog &>/dev/null && [[ "$XDG_SESSION_DESKTOP" == "KDE" ]]; then
+    GUI="kdialog"
+elif command -v zenity &>/dev/null; then
+    GUI="zenity"
+else
+    echo "No GUI tool available (kdialog or zenity required)."
+    exit 1
+fi
+
+# ----------------------------
+# Notifications
+# ----------------------------
+notify() {
+    local msg="$1"
+    if [[ "$GUI" == "kdialog" ]]; then
+        kdialog --passivepopup "$msg" 5
+    else
+        zenity --info --text="$msg"
+    fi
+}
+
+# ----------------------------
+# CPU Scheduler Logic
+# ----------------------------
+VALID_MODES=("auto" "gaming" "powersave" "lowlatency" "server")
+
+get_valid_schedulers() {
+    local raw
+    raw=$(scxctl list 2>/dev/null | grep "supported schedulers:")
+    if [[ -z "$raw" ]]; then
+        notify "Failed to detect a supported scheduler; using fallback."
+        VALID_SCHEDS=("bpfland" "flash" "lavd" "p2dq" "tickless" "rusty")
+    else
+        VALID_SCHEDS=($(echo "$raw" | sed -E 's/.*\[\s*"?(.*)"?\s*\].*/\1/' | tr ',' ' ' | tr -d '"'))
+    fi
+}
+
+cpu_menu() {
+    if [[ "$GUI" == "kdialog" ]]; then
+        CPU_CONFIG_MENU=$(kdialog --combobox "CPU Schedule Control" "Start" "Switch" "Stop")
+    else
+        CPU_CONFIG_MENU=$(zenity --list --title="CPU Schedule Control" --column="Options" "Start" "Switch" "Stop")
+    fi
+}
+
+scheduler_menu() {
+    get_valid_schedulers
+    if [[ "$GUI" == "kdialog" ]]; then
+        SCHEDULER_CHOICE=$(kdialog --combobox "Select CPU scheduler" "${VALID_SCHEDS[@]}")
+        MODE_CHOICE=$(kdialog --combobox "Select scheduler profile" "${VALID_MODES[@]}")
+    else
+        SCHEDULER_CHOICE=$(zenity --list --title="Select CPU scheduler" --column="Schedulers" "${VALID_SCHEDS[@]}")
+        MODE_CHOICE=$(zenity --list --title="Select scheduler profile" --column="Profiles" "${VALID_MODES[@]}")
+    fi
+}
+
+cpu_sched_apply() {
+    local action=$1
+    if [[ -z "$SCHEDULER_CHOICE" ]] || [[ -z "$MODE_CHOICE" ]]; then
+        notify "Scheduler or mode not selected."
+        return 1
+    fi
+    if [[ ! " ${VALID_SCHEDS[*]} " =~ " $SCHEDULER_CHOICE " ]]; then
+        notify "Invalid scheduler selected."
+        return 1
+    fi
+    scxctl "$action" --sched "$SCHEDULER_CHOICE" --mode "$MODE_CHOICE" && \
+        notify "CPU scheduler set to $SCHEDULER_CHOICE with profile $MODE_CHOICE."
+}
+
+cpu_sched_stop() {
+    scxctl stop && notify "CPU scheduler stopped."
+}
+
+run_scxctl() {
+    cpu_menu
+    case "$CPU_CONFIG_MENU" in
+        Start|Switch)
+            scheduler_menu
+            cpu_sched_apply "${CPU_CONFIG_MENU,,}"
+            ;;
+        Stop)
+            cpu_sched_stop
+            ;;
+    esac
+}
+
+# ----------------------------
+# PipeWire Settings Logic
+# ----------------------------
+buffers=("default" "16" "24" "32" "48" "64" "96" "128" "192" "256" "384" "512" "768" "1024" "2048" "4096" "8192")
+rates=("default" "44100" "48000" "88200" "96000" "192000")
+
+select_buffer_rate() {
+    # Buffer selection
+    if [[ "$GUI" == "kdialog" ]]; then
+        AUDIO_BUFFER=$(kdialog --combobox "Select audio buffer (frames)" "${buffers[@]}")
+    else
+        AUDIO_BUFFER=$(zenity --list --title="Select audio buffer (frames)" --column="Options" "${buffers[@]}")
+    fi
+    [[ "$AUDIO_BUFFER" == "default" ]] && AUDIO_BUFFER=1024
+
+    # Sample rate selection
+    if [[ "$GUI" == "kdialog" ]]; then
+        AUDIO_SAMPLE_RATE=$(kdialog --combobox "Select audio sample rate" "${rates[@]}")
+    else
+        AUDIO_SAMPLE_RATE=$(zenity --list --title="Select audio sample rate" --column="Options" "${rates[@]}")
+    fi
+    [[ "$AUDIO_SAMPLE_RATE" == "default" ]] && AUDIO_SAMPLE_RATE=48000
+}
+
+confirm_pipewire_settings() {
+    local msg="Audio buffer: $AUDIO_BUFFER frames\nSample rate: $AUDIO_SAMPLE_RATE Hz"
+    if [[ "$GUI" == "kdialog" ]]; then
+        kdialog --title "PipeWire Settings Confirmation" --msgbox "$msg"
+    else
+        zenity --info --title="PipeWire Settings Confirmation" --text="$msg"
+    fi
+}
+
+apply_pipewire_settings() {
+    pw-metadata -n settings 0 clock.force-quantum "$AUDIO_BUFFER" > /dev/null
+    pw-metadata -n settings 0 clock.force-rate "$AUDIO_SAMPLE_RATE" > /dev/null
+    notify "PipeWire settings applied."
+}
+
+# ----------------------------
+# Launch DAW Logic
+# ----------------------------
+launch_daw() {
+    # Ask for optional environment variables
+    if [[ "$GUI" == "kdialog" ]]; then
+        ENVIRONMENT_VARS=$(kdialog --inputbox "Optional: Enter environment variables (e.g., JACK_DEFAULT_SAMPLE_RATE=48000):")
+    else
+        ENVIRONMENT_VARS=$(zenity --entry --title="Environment Variables" --text="Optional: Enter environment variables (e.g., JACK_DEFAULT_SAMPLE_RATE=48000):")
+    fi
+
+    # Select buffer/sample rate and confirm
+    select_buffer_rate
+    confirm_pipewire_settings
+
+    while true; do
+        # File selector for DAW executable
+        if [[ "$GUI" == "kdialog" ]]; then
+            DAW_PATH=$(kdialog --getopenfilename "/" "Select DAW executable")
+        else
+            DAW_PATH=$(zenity --file-selection --title="Select DAW executable")
+        fi
+
+        if [[ -x "$DAW_PATH" && ! -d "$DAW_PATH" ]]; then
+            notify "Launching DAW..."
+            eval "${ENVIRONMENT_VARS} pw-jack -s $AUDIO_SAMPLE_RATE -p $AUDIO_BUFFER \"$DAW_PATH\"" &
+            break
+        else
+            if [[ "$GUI" == "kdialog" ]]; then
+                kdialog --error "Not a valid executable! Please select a valid binary."
+            else
+                zenity --error --text="Not a valid executable! Please select a valid binary."
+            fi
+        fi
+    done
+}
+
+# ----------------------------
+# Main Menu
+# ----------------------------
+main_menu() {
+    if [[ "$GUI" == "kdialog" ]]; then
+        MAIN_MENU=$(kdialog --combobox "Arch Linux Multimedia Control Center" \
+            "Change CPU Schedulers" \
+            "Change Audio Server Settings" \
+            "Launch DAW" \
+            "Exit")
+    else
+        MAIN_MENU=$(zenity --list --title="Arch Linux Multimedia Control Center" \
+            --column="Options" \
+            "Change CPU Schedulers" \
+            "Change Audio Server Settings" \
+            "Launch DAW" \
+            "Exit")
+    fi
+}
+
+# ----------------------------
+# Main Loop
+# ----------------------------
+MenuEnable=True
+while [[ "$MenuEnable" == True ]]; do
+    main_menu
+    case "$MAIN_MENU" in
+        "Change CPU Schedulers")
+            run_scxctl
+            ;;
+        "Change Audio Server Settings")
+            select_buffer_rate
+            confirm_pipewire_settings
+            apply_pipewire_settings
+            ;;
+        "Launch DAW")
+            launch_daw
+            ;;
+        Exit)
+            MenuEnable=False
+            ;;
+        *)
+            notify "Invalid selection."
+            ;;
+    esac
+done
