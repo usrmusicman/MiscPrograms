@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# YaVST Control Panel using YAD - Improved Version
+# YaVST Control Panel - Improved Version with kdialog/zenity preference
 set -Eeuo pipefail
 IFS=$'\n\t'
 
@@ -12,7 +12,7 @@ DOWNLOAD_PATH="$HOME/Downloads"
 YABRIDGE_ROOT="$BUNDLE_PATH/yabridge"
 YABRIDGECTL_PATH="$YABRIDGE_ROOT/yabridgectl"
 
-# Versions
+# Versions (pinned for GUI stability)
 WINE_VER="${WINE_VER:-9.21}"
 YABRIDGE_VER="${YABRIDGE_VER:-5.1.1}"
 WINEASIO_VER="1.3.0"
@@ -26,6 +26,70 @@ TAR_FLAGS_ZST="-I zstd -xf"
 mkdir -p "$BUNDLE_PATH" "$DOWNLOAD_PATH"
 
 # -------------------------
+# Detect Dialog Tool (kdialog preferred on KDE, zenity fallback)
+# -------------------------
+if [[ "${XDG_CURRENT_DESKTOP:-}" == *KDE* || "${DESKTOP_SESSION:-}" == *plasma* ]]; then
+    if command -v kdialog >/dev/null; then
+        DIALOG_TOOL="kdialog"
+    elif command -v zenity >/dev/null; then
+        DIALOG_TOOL="zenity"
+    else
+        echo "Error: Neither kdialog nor zenity is installed." >&2
+        exit 1
+    fi
+else
+    if command -v zenity >/dev/null; then
+        DIALOG_TOOL="zenity"
+    else
+        echo "Error: Zenity is not installed." >&2
+        exit 1
+    fi
+fi
+
+# -------------------------
+# Dialog Wrapper Functions
+# -------------------------
+dialog_info() {
+    local title="$1"
+    local text="$2"
+    case "$DIALOG_TOOL" in
+        kdialog) kdialog --title "$title" --msgbox "$text" ;;
+        zenity)  zenity --info --title="$title" --text="$text" --no-wrap ;;
+    esac
+}
+
+dialog_error() {
+    local title="$1"
+    local text="$2"
+    case "$DIALOG_TOOL" in
+        kdialog) kdialog --title "$title" --error "$text" ;;
+        zenity)  zenity --error --title="$title" --text="$text" --no-wrap ;;
+    esac
+}
+
+dialog_list_select() {
+    local title="$1"
+    local col1="$2"
+    local col2="$3"
+    shift 3
+    local options=("$@")
+
+    case "$DIALOG_TOOL" in
+        kdialog)
+            local args=("--title" "$title" "--menu" "$title")
+            for ((i=0; i<${#options[@]}; i+=2)); do
+                args+=("${options[i]}" "${options[i+1]}")
+            done
+            kdialog "${args[@]}" || return 1
+            ;;
+        zenity)
+            local zen_args=("--title=$title" "--list" "--column=$col1" "--column=$col2" --hide-column=1 --print-column=1)
+            zenity "${zen_args[@]}" "${options[@]}" || return 1
+            ;;
+    esac
+}
+
+# -------------------------
 # Helper Functions
 # -------------------------
 log_msg() {
@@ -33,7 +97,7 @@ log_msg() {
 }
 
 error_exit() {
-    yad --info --title="YaVST Error" --text="$*"
+    dialog_error "YaVST Error" "$*"
     exit 1
 }
 
@@ -64,9 +128,7 @@ ensure_source_line() {
     local rc_file="$1"
     local source_line="$2"
     local header="$3"
-
     [[ -f "$rc_file" ]] || return 0
-
     if ! grep -Fqx "$source_line" "$rc_file"; then
         {
             echo
@@ -108,12 +170,11 @@ cleanup_old_yabridge() {
 
 edit_yabridgectl_config() {
     local config_file="$HOME/.config/yabridgectl/config.toml"
-    [[ -f "$config_file" ]] || { yad --error --title="YaVST" --text="Config file not found at $config_file"; return; }
-
+    [[ -f "$config_file" ]] || { dialog_error "YaVST" "Config file not found at $config_file"; return; }
     if command -v xdg-open >/dev/null; then
-        xdg-open "$config_file" || yad --error --title="YaVST" --text="Failed to open config file with default editor."
+        xdg-open "$config_file" || dialog_error "YaVST" "Failed to open config file with default editor."
     else
-        yad --error --title="YaVST" --text="Cannot edit config: xdg-open not found or no default editor set."
+        dialog_error "YaVST" "Cannot edit config: xdg-open not found or no default editor set."
     fi
 }
 
@@ -123,15 +184,9 @@ install_yabridge() {
     download_file "https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VER}/yabridge-${YABRIDGE_VER}.tar.gz" "$file"
     cleanup_old_yabridge
     extract_archive "$file" "$dest"
-
-    # Remove any .md files
     find "$dest" -name "*.md" -type f -delete
-
-    # Create or replace symlink
     [[ -L "$HOME/.local/share/yabridge" || -e "$HOME/.local/share/yabridge" ]] && rm -rf "$HOME/.local/share/yabridge"
     ln -s "$dest" "$HOME/.local/share/yabridge"
-
-    # chmod safer permissions
     chmod -R u+rwX,go-rX "$dest"
 }
 
@@ -144,12 +199,10 @@ detect_wine_bin() {
 }
 
 configure_winasio() {
-    # Check required commands
     for cmd in wget tar zstd file; do
-        command -v "$cmd" >/dev/null || { yad --info --title="YaVST" --text="$cmd not found, please install it"; return; }
+        command -v "$cmd" >/dev/null || { dialog_info "YaVST" "$cmd not found, please install it"; return; }
     done
 
-    # Auto-detect Wine prefixes
     local candidates=("$HOME/.wine" "$HOME/win32" "$HOME/win64")
     local WINEPREFIX_LIST=()
     for p in "${candidates[@]}"; do
@@ -163,43 +216,31 @@ configure_winasio() {
     elif [[ ${#WINEPREFIX_LIST[@]} -eq 1 ]]; then
         WINEPREFIX="${WINEPREFIX_LIST[0]}"
     else
-        # Let user pick one
         local options=()
         for i in "${!WINEPREFIX_LIST[@]}"; do
             options+=("$i" "${WINEPREFIX_LIST[$i]}")
         done
         local sel
-        sel=$(yad --list \
-            --title="Select WINEPREFIX" \
-            --column="Index" \
-            --column="WINEPREFIX" \
-            --separator="|" \
-            "${options[@]}") || return
-        [[ -z "$sel" ]] && return
-        local idx=$(echo "$sel" | cut -d'|' -f1)
-        WINEPREFIX="${WINEPREFIX_LIST[$idx]}"
+        sel=$(dialog_list_select "Select WINEPREFIX" "Index" "Path" "${options[@]}") || return
+        WINEPREFIX="${WINEPREFIX_LIST[$sel]}"
     fi
 
     mkdir -p "$WINEPREFIX/drive_c/windows/system32/"
 
-    # Download WineASIO package
     local WINEASIO_PKG="wineasio-${WINEASIO_VER}-${WINEASIO_REV}-x86_64.pkg.tar.zst"
     local archive="$DOWNLOAD_PATH/$WINEASIO_PKG"
     [[ -f "$archive" ]] || download_file "https://builds.garudalinux.org/repos/chaotic-aur/x86_64/$WINEASIO_PKG" "$archive"
 
-    # Extract archive preserving paths
     local temp="$BUNDLE_PATH/wineasio_temp"
     rm -rf "$temp"
     mkdir -p "$temp"
     tar -I zstd -xf "$archive" -C "$temp"
 
-    # Detect prefix architecture (default to 64-bit)
     local ARCH="win64"
     if [[ -f "$WINEPREFIX/drive_c/windows/system32/kernel32.dll" ]]; then
         file "$WINEPREFIX/drive_c/windows/system32/kernel32.dll" | grep -q "PE32 executable (DLL)" && ARCH="win32"
     fi
 
-    # Select DLLs
     local DLL_UNIX DLL_WIN TARGET_DIR
     if [[ "$ARCH" == "win64" ]]; then
         DLL_UNIX=$(find "$temp/usr/lib/wine/x86_64-unix" -name "wineasio64.dll.so" | head -n1)
@@ -213,24 +254,19 @@ configure_winasio() {
 
     [[ -z "$DLL_UNIX" || -z "$DLL_WIN" ]] && { error_exit "WineASIO DLLs not found in archive!"; rm -rf "$temp"; return; }
 
-    # Ensure target directory exists and is a directory
     if [[ -e "$TARGET_DIR" && ! -d "$TARGET_DIR" ]]; then
         rm -f "$TARGET_DIR"
     fi
     mkdir -p "$TARGET_DIR"
 
-    # Copy files
     cp -v "$DLL_WIN" "$WINEPREFIX/drive_c/windows/system32/"
     cp -v "$DLL_UNIX" "$TARGET_DIR/"
 
-    # Set environment variable so DAWs can see WineASIO
     export WINEPREFIX="$WINEPREFIX"
     export WINEPATH="$TARGET_DIR"
 
-    # Clean up temporary folder
     rm -rf "$temp"
-
-    yad --info --title="WineASIO" --text="WineASIO installed successfully in WINEPREFIX:\n$WINEPREFIX\nMake sure your DAW uses this Wine prefix."
+    dialog_info "WineASIO" "WineASIO installed successfully in WINEPREFIX:\n$WINEPREFIX\nMake sure your DAW uses this Wine prefix."
 }
 
 install_wine_bundle() {
@@ -239,35 +275,27 @@ install_wine_bundle() {
     download_file "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VER}/$file" "$DOWNLOAD_PATH/$file"
     cleanup_old_wine
     extract_archive "$DOWNLOAD_PATH/$file" "$BUNDLE_PATH"
-
     rm -f "$BUNDLE_PATH/wine-tkg-config.txt"
     chmod u+rwX,go-rX "$BUNDLE_PATH/bin"/*
-
-    # Install Yabridge immediately after wine install
     install_yabridge
 }
 
 rescan_vsts() {
     run_process "$YABRIDGECTL_PATH" sync
-    yad --info --title="YaVST" --text="VST rescan complete."
+    dialog_info "YaVST" "VST rescan complete."
 }
 
 set_env() {
     local CONFIG_DIR="$HOME/.config/yavst"
     local ENV_FILE="$CONFIG_DIR/env.sh"
-
     log_msg "Configuring YaVST environment…"
-
     mkdir -p "$CONFIG_DIR"
 
-    # Canonical env (bash/zsh)
     cat > "$ENV_FILE" <<EOF
 #!/usr/bin/env bash
 # YaVST / Yabridge Environment
-
 export WINEPREFIX="\${WINEPREFIX:-$HOME/.wine}"
 declare -r BUNDLE_PATH="$BUNDLE_PATH"
-
 export PATH="\$BUNDLE_PATH/bin:\$HOME/.local/share/yabridge:\$PATH"
 export WINEDLLPATH="\$BUNDLE_PATH/lib/wine:\$BUNDLE_PATH/lib/wine/fakedlls"
 export WINELOADER="\$BUNDLE_PATH/bin/wine"
@@ -277,40 +305,31 @@ EOF
 
     chmod +x "$ENV_FILE"
 
-    # Bash
-    ensure_source_line \
-        "$HOME/.bashrc" \
-        '[ -f "$HOME/.config/yavst/env.sh" ] && source "$HOME/.config/yavst/env.sh"' \
-        "## YaVST Environment"
+    ensure_source_line "$HOME/.bashrc" '[ -f "$HOME/.config/yavst/env.sh" ] && source "$HOME/.config/yavst/env.sh"' "## YaVST Environment"
+    ensure_source_line "$HOME/.zshrc"  '[ -f "$HOME/.config/yavst/env.sh" ] && source "$HOME/.config/yavst/env.sh"' "## YaVST Environment"
 
-    # Zsh
-    ensure_source_line \
-        "$HOME/.zshrc" \
-        '[ -f "$HOME/.config/yavst/env.sh" ] && source "$HOME/.config/yavst/env.sh"' \
-        "## YaVST Environment"
-
-    # Fish (if installed)
     if command -v fish >/dev/null; then
-        write_fish_env
+        # Minimal fish support (you can expand this if needed)
+        local fish_dir="$HOME/.config/fish/conf.d"
+        mkdir -p "$fish_dir"
+        cat > "$fish_dir/yavst.fish" <<EOF
+# YaVST Environment
+if test -f $HOME/.config/yavst/env.sh
+    source $HOME/.config/yavst/env.sh
+end
+EOF
     fi
 
-    yad --info \
-        --title="YaVST" \
-        --text="YaVST environment configured for Bash/Zsh/Fish.\n\nRestart your shell to apply."
+    dialog_info "YaVST" "YaVST environment configured for Bash/Zsh/Fish.\n\nRestart your shell or source the file to apply."
 }
 
 unset_env() {
     rm -rf "$HOME/.config/yavst"
-
     sed -i '/## YaVST Environment/,+1d' "$HOME/.bashrc" 2>/dev/null || true
     sed -i '/## YaVST Environment/,+1d' "$HOME/.zshrc" 2>/dev/null || true
-
-    rm -f "$HOME/.config/fish/yavst.fish"
+    rm -f "$HOME/.config/fish/conf.d/yavst.fish"
     sed -i '/# YaVST Environment/,+1d' "$HOME/.config/fish/config.fish" 2>/dev/null || true
-
-    yad --info \
-        --title="YaVST" \
-        --text="YaVST environment removed from all supported shells.\n\nRestart your shell."
+    dialog_info "YaVST" "YaVST environment removed from all supported shells.\n\nRestart your shell."
 }
 
 # -------------------------
@@ -319,15 +338,16 @@ unset_env() {
 select_vst_dir() {
     local dir=""
     while true; do
-        if [[ "${XDG_CURRENT_DESKTOP:-}" == *KDE* || "${DESKTOP_SESSION:-}" == *plasma* ]]; then
-            command -v kdialog &>/dev/null && dir=$(kdialog --getexistingdirectory "$HOME" "Select VST Directory") || \
-            dir=$(zenity --file-selection --directory --title="Select VST Directory") || return
-        else
-            dir=$(zenity --file-selection --directory --title="Select VST Directory") || return
-        fi
-
+        case "$DIALOG_TOOL" in
+            kdialog)
+                dir=$(kdialog --getexistingdirectory "$HOME" "Select VST Directory") || return
+                ;;
+            zenity)
+                dir=$(zenity --file-selection --directory --title="Select VST Directory") || return
+                ;;
+        esac
         [[ -d "$dir" ]] && { echo "$dir"; break; }
-        yad --error --title="YaVST" --text="Invalid directory: '$dir'. Please try again."
+        dialog_error "YaVST" "Invalid directory: '$dir'. Please try again."
         sleep 0.2
     done
 }
@@ -337,12 +357,12 @@ add_vst_dir() {
     dir=$(select_vst_dir) || return
     run_process "$YABRIDGECTL_PATH" add "$dir"
     run_process "$YABRIDGECTL_PATH" sync
-    yad --info --title="YaVST" --text="Added VST directory:\n$dir"
+    dialog_info "YaVST" "Added VST directory:\n$dir"
 }
 
 remove_vst_dir() {
     mapfile -t dirs < <("$YABRIDGECTL_PATH" list)
-    [[ ${#dirs[@]} -gt 0 ]] || { yad --info --title="YaVST" --text="No VST directories to remove"; return; }
+    [[ ${#dirs[@]} -gt 0 ]] || { dialog_info "YaVST" "No VST directories to remove"; return; }
 
     local options=()
     for i in "${!dirs[@]}"; do
@@ -350,66 +370,56 @@ remove_vst_dir() {
     done
 
     local sel
-    sel=$(yad --list \
-        --title="Remove VST directory" \
-        --column="Index" \
-        --column="Directory" \
-        --separator="|" \
-        "${options[@]}") || return
-
+    sel=$(dialog_list_select "Remove VST directory" "Index" "Directory" "${options[@]}") || return
     [[ -z "$sel" ]] && return
+    [[ -n "${dirs[$sel]}" ]] || { dialog_error "YaVST" "Invalid selection"; return; }
 
-    local idx
-    idx=$(echo "$sel" | cut -d'|' -f1)
-    [[ -n "${dirs[$idx]:-}" ]] || { yad --error --title="YaVST" --text="Invalid selection"; return; }
-
-    "$YABRIDGECTL_PATH" rm "${dirs[$idx]}"
+    "$YABRIDGECTL_PATH" rm "${dirs[$sel]}"
     "$YABRIDGECTL_PATH" sync
-    yad --info --title="YaVST" --text="Removed VST directory:\n${dirs[$idx]}"
+    dialog_info "YaVST" "Removed VST directory:\n${dirs[$sel]}"
 }
 
-# -------------------------
-# Main GUI Loop
-# -------------------------
-while true; do
-    set +e
-    action=$(yad \
-        --width=500 \
-        --height=450 \
-        --title="YaVST Control Panel" \
-        --list \
-        --column="Action" \
-        --print-column=1 \
-        --separator="" \
-        "Install YaVST (Multilib)" \
-        "Install YaVST (WOW64)" \
-        "Register WineASIO in Wine Prefix" \
-        "Add VST Directory" \
-        "Remove VST Directory" \
-        "Rescan VSTs" \
-        "Edit yabridgectl Config" \
-        "Set YaVST Environment" \
-        "Remove YaVST Environment" \
-        "Exit" \
-        --button="Ok":0 \
-        --button="Cancel":1
-    )
-    ret=$?
-    set -e
+# ... all functions above remain unchanged ...
 
-    [[ $ret -ne 0 || -z "$action" ]] && continue
+# Put this at the very end of the script
+main() {
+    while true; do
+        set +e
 
-    case "$action" in
-        "Install YaVST (Multilib)") install_wine_bundle "" ;;
-        "Install YaVST (WOW64)") install_wine_bundle "-wow64" ;;
-        "Register WineASIO in Wine Prefix") configure_winasio ;;
-        "Add VST Directory") add_vst_dir ;;
-        "Remove VST Directory") remove_vst_dir ;;
-        "Rescan VSTs") rescan_vsts ;;
-        "Edit yabridgectl Config") edit_yabridgectl_config ;;
-        "Set YaVST Environment") set_env ;;
-        "Remove YaVST Environment") unset_env ;;
-        "Exit") break ;;
-        *) yad --error --title="YaVST" --text="Unknown action:\n$action" ;;
-    esac
-done
+        local menu_options=(
+            "Install YaVST (Multilib)"          "Install YaVST (Multilib)"
+            "Install YaVST (WOW64)"             "Install YaVST (WOW64)"
+            "Register WineASIO in Wine Prefix"  "Register WineASIO in Wine Prefix"
+            "Add VST Directory"                 "Add VST Directory"
+            "Remove VST Directory"              "Remove VST Directory"
+            "Rescan VSTs"                       "Rescan VSTs"
+            "Edit yabridgectl Config"           "Edit yabridgectl Config"
+            "Set YaVST Environment"             "Set YaVST Environment"
+            "Remove YaVST Environment"          "Remove YaVST Environment"
+            "Exit"                              "Exit"
+        )
+
+        local action
+        action=$(dialog_list_select "YaVST Control Panel" "Action" "Description" "${menu_options[@]}") || { set -e; continue; }
+
+        set -e
+        [[ -z "$action" ]] && continue
+
+        case "$action" in
+            "Install YaVST (Multilib)")         install_wine_bundle "" ;;
+            "Install YaVST (WOW64)")            install_wine_bundle "-wow64" ;;
+            "Register WineASIO in Wine Prefix") configure_winasio ;;
+            "Add VST Directory")                add_vst_dir ;;
+            "Remove VST Directory")             remove_vst_dir ;;
+            "Rescan VSTs")                      rescan_vsts ;;
+            "Edit yabridgectl Config")          edit_yabridgectl_config ;;
+            "Set YaVST Environment")            set_env ;;
+            "Remove YaVST Environment")         unset_env ;;
+            "Exit")                             break ;;
+            *) dialog_error "YaVST" "Unknown action: $action" ;;
+        esac
+    done
+}
+
+# Call the main function
+main
