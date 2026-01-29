@@ -1,0 +1,11 @@
+#!/usr/bin/env xdg-open
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Audio Control Center
+Comment=Optimize Arch Linux for Pro Audio
+Exec=/home/artofmusic/.local/bin/pro-audio-multimedia-control/pro_multimedia_control_panel
+Icon=audio-card
+Terminal=false
+Categories=AudioVideo;Audio;Development;
+Keywords=audio;daw;optimize;pipewire;
