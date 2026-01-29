@@ -1,11 +1,12 @@
 #!/bin/bash
 # Arch Linux Multimedia Control Center
-# Dependencies: scxctl, pw-metadata, pw-jack, kdialog, zenity
+# Optimized for Scarlett 2i2, Nvidia/AMD, and Pro Audio
+# Dependencies: scx-scheds-git, pipewire, pkexec, kdialog/zenity, rtirq
 
 # ----------------------------
 # GUI Detection
 # ----------------------------
-if command -v kdialog &>/dev/null && [[ "$XDG_SESSION_DESKTOP" == "KDE" ]]; then
+if command -v kdialog &>/dev/null; then
     GUI="kdialog"
 elif command -v zenity &>/dev/null; then
     GUI="zenity"
@@ -14,20 +15,17 @@ else
     exit 1
 fi
 
-# ----------------------------
-# Notifications
-# ----------------------------
 notify() {
     local msg="$1"
     if [[ "$GUI" == "kdialog" ]]; then
-        kdialog --passivepopup "$msg" 5
+        kdialog --passivepopup "$msg" 4
     else
-        zenity --info --text="$msg"
+        zenity --info --text="$msg" --timeout=4
     fi
 }
 
 # ----------------------------
-# CPU Scheduler Logic
+# CPU Scheduler Logic (scx)
 # ----------------------------
 VALID_MODES=("auto" "gaming" "powersave" "lowlatency" "server")
 
@@ -35,7 +33,6 @@ get_valid_schedulers() {
     local raw
     raw=$(scxctl list 2>/dev/null | grep "supported schedulers:")
     if [[ -z "$raw" ]]; then
-        notify "Failed to detect a supported scheduler; using fallback."
         VALID_SCHEDS=("bpfland" "flash" "lavd" "p2dq" "tickless" "rusty")
     else
         VALID_SCHEDS=($(echo "$raw" | sed -E 's/.*\[\s*"?(.*)"?\s*\].*/\1/' | tr ',' ' ' | tr -d '"'))
@@ -63,20 +60,15 @@ scheduler_menu() {
 
 cpu_sched_apply() {
     local action=$1
-    if [[ -z "$SCHEDULER_CHOICE" ]] || [[ -z "$MODE_CHOICE" ]]; then
-        notify "Scheduler or mode not selected."
-        return 1
-    fi
-    if [[ ! " ${VALID_SCHEDS[*]} " =~ " $SCHEDULER_CHOICE " ]]; then
-        notify "Invalid scheduler selected."
-        return 1
-    fi
-    scxctl "$action" --sched "$SCHEDULER_CHOICE" --mode "$MODE_CHOICE" && \
-        notify "CPU scheduler set to $SCHEDULER_CHOICE with profile $MODE_CHOICE."
+    [[ -z "$SCHEDULER_CHOICE" || -z "$MODE_CHOICE" ]] && return 1
+
+    # Elevation required for scxctl
+    pkexec scxctl "$action" --sched "$SCHEDULER_CHOICE" --mode "$MODE_CHOICE" && \
+        notify "CPU scheduler set to $SCHEDULER_CHOICE ($MODE_CHOICE)."
 }
 
 cpu_sched_stop() {
-    scxctl stop && notify "CPU scheduler stopped."
+    pkexec scxctl stop && notify "CPU scheduler stopped."
 }
 
 run_scxctl() {
@@ -93,124 +85,125 @@ run_scxctl() {
 }
 
 # ----------------------------
-# PipeWire Settings Logic
+# Hardware Optimization (Governor/GPU/IRQ)
 # ----------------------------
-buffers=("default" "16" "24" "32" "48" "64" "96" "128" "192" "256" "384" "512" "768" "1024" "2048" "4096" "8192")
-rates=("default" "44100" "48000" "88200" "96000" "192000")
+cpu_boost() {
+    local gov_file="/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors"
+    local target_gov=""
+
+    if [[ "$1" == "on" ]]; then
+        target_gov="performance"
+    else
+        grep -q "schedutil" "$gov_file" && target_gov="schedutil" || target_gov="powersave"
+    fi
+
+    # Using pkexec for sysfs writes
+    echo "$target_gov" | pkexec tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null
+    notify "CPU Governor: $target_gov"
+}
+
+gpu_boost() {
+    local mode=$1
+    if command -v nvidia-settings &>/dev/null; then
+        # Nvidia-settings usually works as user if X is running, but Mizer needs rights
+        if [[ "$mode" == "on" ]]; then
+            nvidia-settings -a "[gpu:0]/GPUPowerMizerMode=1" > /dev/null 2>&1
+        else
+            nvidia-settings -a "[gpu:0]/GPUPowerMizerMode=0" > /dev/null 2>&1
+        fi
+    elif [[ -d /sys/class/drm/card0/device ]]; then
+        local amd_path="/sys/class/drm/card0/device/power_dpm_force_performance_level"
+        if [[ -f "$amd_path" ]]; then
+            local val=$([[ "$mode" == "on" ]] && echo "high" || echo "auto")
+            echo "$val" | pkexec tee "$amd_path" > /dev/null
+        fi
+    fi
+}
+
+system_optimize() {
+    local state=$1
+    if [[ "$state" == "on" ]]; then
+        # PipeWire metadata does NOT need root (user level daemon)
+        pw-metadata -n settings 0 clock.force-quantum "$AUDIO_BUFFER" > /dev/null
+        pw-metadata -n settings 0 clock.force-rate "$AUDIO_SAMPLE_RATE" > /dev/null
+
+        cpu_boost "on"
+        gpu_boost "on"
+
+        # IRQ and Modprobe require elevation
+        [[ $(command -v rtirq) ]] && pkexec rtirq restart
+        lsmod | grep -q snd_hrtimer || pkexec modprobe snd_hrtimer
+
+        notify "PRO MODE: $AUDIO_BUFFER / $AUDIO_SAMPLE_RATE Locked."
+    else
+        pw-metadata -n settings 0 clock.force-quantum 0 > /dev/null
+        pw-metadata -n settings 0 clock.force-rate 0 > /dev/null
+        cpu_boost "off"
+        gpu_boost "off"
+        notify "ECO MODE: Balanced power restored."
+    fi
+}
+
+# ----------------------------
+# Launch & Selection
+# ----------------------------
+buffers=("32" "48" "64" "96" "128" "192" "256" "512" "1024" "2048")
+rates=("44100" "48000" "88200" "96000")
 
 select_buffer_rate() {
-    # Buffer selection
     if [[ "$GUI" == "kdialog" ]]; then
-        AUDIO_BUFFER=$(kdialog --combobox "Select audio buffer (frames)" "${buffers[@]}")
+        AUDIO_BUFFER=$(kdialog --combobox "Select Buffer (Frames)" "${buffers[@]}")
+        AUDIO_SAMPLE_RATE=$(kdialog --combobox "Select Sample Rate" "${rates[@]}")
     else
-        AUDIO_BUFFER=$(zenity --list --title="Select audio buffer (frames)" --column="Options" "${buffers[@]}")
+        AUDIO_BUFFER=$(zenity --list --title="Buffer" --column="Frames" "${buffers[@]}")
+        AUDIO_SAMPLE_RATE=$(zenity --list --title="Rate" --column="Hz" "${rates[@]}")
     fi
-    [[ "$AUDIO_BUFFER" == "default" ]] && AUDIO_BUFFER=1024
-
-    # Sample rate selection
-    if [[ "$GUI" == "kdialog" ]]; then
-        AUDIO_SAMPLE_RATE=$(kdialog --combobox "Select audio sample rate" "${rates[@]}")
-    else
-        AUDIO_SAMPLE_RATE=$(zenity --list --title="Select audio sample rate" --column="Options" "${rates[@]}")
-    fi
-    [[ "$AUDIO_SAMPLE_RATE" == "default" ]] && AUDIO_SAMPLE_RATE=48000
+    [[ -z "$AUDIO_BUFFER" ]] && AUDIO_BUFFER=1024
+    [[ -z "$AUDIO_SAMPLE_RATE" ]] && AUDIO_SAMPLE_RATE=48000
 }
 
-confirm_pipewire_settings() {
-    local msg="Audio buffer: $AUDIO_BUFFER frames\nSample rate: $AUDIO_SAMPLE_RATE Hz"
-    if [[ "$GUI" == "kdialog" ]]; then
-        kdialog --title "PipeWire Settings Confirmation" --msgbox "$msg"
-    else
-        zenity --info --title="PipeWire Settings Confirmation" --text="$msg"
-    fi
-}
-
-apply_pipewire_settings() {
-    pw-metadata -n settings 0 clock.force-quantum "$AUDIO_BUFFER" > /dev/null
-    pw-metadata -n settings 0 clock.force-rate "$AUDIO_SAMPLE_RATE" > /dev/null
-    notify "PipeWire settings applied."
-}
-
-# ----------------------------
-# Launch DAW Logic
-# ----------------------------
 launch_daw() {
-    # Ask for optional environment variables
+    local default_env="WINEFSYNC=1 WINESYNC=1"
+
     if [[ "$GUI" == "kdialog" ]]; then
-        ENVIRONMENT_VARS=$(kdialog --inputbox "Optional: Enter environment variables (e.g., JACK_DEFAULT_SAMPLE_RATE=48000):")
+        ENVIRONMENT_VARS=$(kdialog --inputbox "Env Vars:" "$default_env")
+        DAW_PATH=$(kdialog --getopenfilename "/" "Select DAW Executable")
     else
-        ENVIRONMENT_VARS=$(zenity --entry --title="Environment Variables" --text="Optional: Enter environment variables (e.g., JACK_DEFAULT_SAMPLE_RATE=48000):")
+        ENVIRONMENT_VARS=$(zenity --entry --title="Env Vars" --entry-text="$default_env")
+        DAW_PATH=$(zenity --file-selection --title="Select DAW Executable")
     fi
 
-    # Select buffer/sample rate and confirm
+    # Exit if user cancelled file selection
+    [[ -z "$DAW_PATH" ]] && return
+
     select_buffer_rate
-    confirm_pipewire_settings
+    system_optimize "on"
 
-    while true; do
-        # File selector for DAW executable
-        if [[ "$GUI" == "kdialog" ]]; then
-            DAW_PATH=$(kdialog --getopenfilename "/" "Select DAW executable")
-        else
-            DAW_PATH=$(zenity --file-selection --title="Select DAW executable")
-        fi
-
-        if [[ -x "$DAW_PATH" && ! -d "$DAW_PATH" ]]; then
-            notify "Launching DAW..."
-            eval "${ENVIRONMENT_VARS} pw-jack -s $AUDIO_SAMPLE_RATE -p $AUDIO_BUFFER \"$DAW_PATH\"" &
-            break
-        else
-            if [[ "$GUI" == "kdialog" ]]; then
-                kdialog --error "Not a valid executable! Please select a valid binary."
-            else
-                zenity --error --text="Not a valid executable! Please select a valid binary."
-            fi
-        fi
-    done
-}
-
-# ----------------------------
-# Main Menu
-# ----------------------------
-main_menu() {
-    if [[ "$GUI" == "kdialog" ]]; then
-        MAIN_MENU=$(kdialog --combobox "Arch Linux Multimedia Control Center" \
-            "Change CPU Schedulers" \
-            "Change Audio Server Settings" \
-            "Launch DAW" \
-            "Exit")
+    if [[ -x "$DAW_PATH" && ! -d "$DAW_PATH" ]]; then
+        export PIPEWIRE_LATENCY="$AUDIO_BUFFER/$AUDIO_SAMPLE_RATE"
+        # Run DAW as user, but with optimized environment
+        eval "${ENVIRONMENT_VARS} pw-jack -s $AUDIO_SAMPLE_RATE -p $AUDIO_BUFFER \"$DAW_PATH\"" &
     else
-        MAIN_MENU=$(zenity --list --title="Arch Linux Multimedia Control Center" \
-            --column="Options" \
-            "Change CPU Schedulers" \
-            "Change Audio Server Settings" \
-            "Launch DAW" \
-            "Exit")
+        notify "Error: Executable not found."
+        system_optimize "off"
     fi
 }
 
 # ----------------------------
 # Main Loop
 # ----------------------------
-MenuEnable=True
-while [[ "$MenuEnable" == True ]]; do
-    main_menu
+while true; do
+    if [[ "$GUI" == "kdialog" ]]; then
+        MAIN_MENU=$(kdialog --combobox "Arch Audio Control" "Launch DAW (Auto-Optimize)" "Change CPU Schedulers (scxctl)" "Manual Optimization ON" "Manual Optimization OFF" "Exit")
+    else
+        MAIN_MENU=$(zenity --list --title="Arch Audio Control" --column="Options" "Launch DAW (Auto-Optimize)" "Change CPU Schedulers (scxctl)" "Manual Optimization ON" "Manual Optimization OFF" "Exit")
+    fi
+
     case "$MAIN_MENU" in
-        "Change CPU Schedulers")
-            run_scxctl
-            ;;
-        "Change Audio Server Settings")
-            select_buffer_rate
-            confirm_pipewire_settings
-            apply_pipewire_settings
-            ;;
-        "Launch DAW")
-            launch_daw
-            ;;
-        Exit)
-            MenuEnable=False
-            ;;
-        *)
-            notify "Invalid selection."
-            ;;
+        "Launch DAW (Auto-Optimize)") launch_daw ;;
+        "Change CPU Schedulers (scxctl)") run_scxctl ;;
+        "Manual Optimization ON") select_buffer_rate; system_optimize "on" ;;
+        "Manual Optimization OFF") system_optimize "off" ;;
+        Exit|*) system_optimize "off"; break ;;
     esac
 done
