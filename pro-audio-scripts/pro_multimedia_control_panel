@@ -1,34 +1,51 @@
 #!/bin/bash
-# Arch Linux Multimedia Control Center
-# Optimized for Scarlett 2i2, Nvidia/AMD, and Pro Audio
-# Dependencies: scx-scheds-git, pipewire, pkexec, kdialog/zenity, rtirq
+# Arch Linux Multimedia Control Center (Pure CLI - Sudo Version)
+# Optimized for Scarlett 2i2, 12700K (P/E-core jitter), and Pro Audio
 
 # ----------------------------
-# GUI Detection
+# CONFIGURATION & STATE
 # ----------------------------
-if command -v kdialog &>/dev/null; then
-    GUI="kdialog"
-elif command -v zenity &>/dev/null; then
-    GUI="zenity"
-else
-    echo "No GUI tool available (kdialog or zenity required)."
-    exit 1
-fi
+WIFI_STATE_FILE="/tmp/pro-audio-control-wifi.state"
+buffers=("32" "48" "64" "96" "128" "192" "256" "512" "1024" "2048")
+rates=("44100" "48000" "88200" "96000")
 
 notify() {
-    local msg="$1"
-    if [[ "$GUI" == "kdialog" ]]; then
-        kdialog --passivepopup "$msg" 4
+    echo -e "[INFO] $1"
+}
+
+# ----------------------------
+# C-States (CPU Latency) Management
+# ----------------------------
+manage_cstates() {
+    # 0 = Always Active (No sleep), 2000 = Standard (Allow deep sleep)
+    local state=$1
+    if [[ "$state" == "on" ]]; then
+        # Writing 0 to cpu_dma_latency blocks all C-states except C0
+        if [[ -e /dev/cpu_dma_latency ]]; then
+            # We use a background exec to keep the file descriptor open,
+            # otherwise the kernel resets it when the script exits.
+            # For a CLI toggle, we use the sysfs pm_qos interface if available,
+            # but for a simple bash toggle, we will use the force_cpuidle_latency.
+            if [[ -d /sys/devices/system/cpu/cpu0/cpuidle ]]; then
+                for d in /sys/devices/system/cpu/cpu*/cpuidle/state*/disable; do
+                    echo 1 | sudo tee "$d" > /dev/null
+                done
+                notify "CPU: C-States DISABLED (All cores locked to C0)."
+            fi
+        fi
     else
-        zenity --info --text="$msg" --timeout=4
+        if [[ -d /sys/devices/system/cpu/cpu0/cpuidle ]]; then
+            for d in /sys/devices/system/cpu/cpu*/cpuidle/state*/disable; do
+                echo 0 | sudo tee "$d" > /dev/null
+            done
+            notify "CPU: C-States ENABLED (Standard power saving restored)."
+        fi
     fi
 }
 
 # ----------------------------
 # CPU Scheduler Logic (scx)
 # ----------------------------
-VALID_MODES=("auto" "gaming" "powersave" "lowlatency" "server")
-
 get_valid_schedulers() {
     local raw
     raw=$(scxctl list 2>/dev/null | grep "supported schedulers:")
@@ -39,171 +56,164 @@ get_valid_schedulers() {
     fi
 }
 
-cpu_menu() {
-    if [[ "$GUI" == "kdialog" ]]; then
-        CPU_CONFIG_MENU=$(kdialog --combobox "CPU Schedule Control" "Start" "Switch" "Stop")
-    else
-        CPU_CONFIG_MENU=$(zenity --list --title="CPU Schedule Control" --column="Options" "Start" "Switch" "Stop")
-    fi
-}
-
-scheduler_menu() {
-    get_valid_schedulers
-    if [[ "$GUI" == "kdialog" ]]; then
-        SCHEDULER_CHOICE=$(kdialog --combobox "Select CPU scheduler" "${VALID_SCHEDS[@]}")
-        MODE_CHOICE=$(kdialog --combobox "Select scheduler profile" "${VALID_MODES[@]}")
-    else
-        SCHEDULER_CHOICE=$(zenity --list --title="Select CPU scheduler" --column="Schedulers" "${VALID_SCHEDS[@]}")
-        MODE_CHOICE=$(zenity --list --title="Select scheduler profile" --column="Profiles" "${VALID_MODES[@]}")
-    fi
-}
-
 cpu_sched_apply() {
-    local action=$1
-    [[ -z "$SCHEDULER_CHOICE" || -z "$MODE_CHOICE" ]] && return 1
-
-    # Elevation required for scxctl
-    pkexec scxctl "$action" --sched "$SCHEDULER_CHOICE" --mode "$MODE_CHOICE" && \
-        notify "CPU scheduler set to $SCHEDULER_CHOICE ($MODE_CHOICE)."
+    local action=$1; local sched=$2; local mode=$3
+    [[ -z "$sched" || -z "$mode" ]] && return 1
+    sudo scxctl "$action" --sched "$sched" --mode "$mode" && \
+        notify "CPU scheduler set to $sched ($mode)."
 }
 
 cpu_sched_stop() {
-    pkexec scxctl stop && notify "CPU scheduler stopped."
-}
-
-run_scxctl() {
-    cpu_menu
-    case "$CPU_CONFIG_MENU" in
-        Start|Switch)
-            scheduler_menu
-            cpu_sched_apply "${CPU_CONFIG_MENU,,}"
-            ;;
-        Stop)
-            cpu_sched_stop
-            ;;
-    esac
+    sudo scxctl stop && notify "CPU scheduler stopped."
 }
 
 # ----------------------------
-# Hardware Optimization (Governor/GPU/IRQ)
+# Hardware & Kernel Optimization
 # ----------------------------
-cpu_boost() {
-    local gov_file="/sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors"
-    local target_gov=""
-
-    if [[ "$1" == "on" ]]; then
-        target_gov="performance"
+manage_wifi_latency() {
+    if [[ "$1" == "boost" ]]; then
+        iw dev | grep "Power save: on" > /dev/null && echo "on" > "$WIFI_STATE_FILE" || echo "off" > "$WIFI_STATE_FILE"
+        notify "NET: Disabling Wi-Fi Power Management"
+        sudo iw dev wlan0 set power_save off 2>/dev/null
     else
-        grep -q "schedutil" "$gov_file" && target_gov="schedutil" || target_gov="powersave"
+        [[ "$(cat "$WIFI_STATE_FILE" 2>/dev/null)" == "on" ]] && sudo iw dev wlan0 set power_save on 2>/dev/null
+        rm -f "$WIFI_STATE_FILE"
+        notify "NET: Restored Wi-Fi State"
     fi
-
-    # Using pkexec for sysfs writes
-    echo "$target_gov" | pkexec tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null
-    notify "CPU Governor: $target_gov"
 }
 
-gpu_boost() {
-    local mode=$1
-    if command -v nvidia-settings &>/dev/null; then
-        # Nvidia-settings usually works as user if X is running, but Mizer needs rights
-        if [[ "$mode" == "on" ]]; then
-            nvidia-settings -a "[gpu:0]/GPUPowerMizerMode=1" > /dev/null 2>&1
-        else
-            nvidia-settings -a "[gpu:0]/GPUPowerMizerMode=0" > /dev/null 2>&1
-        fi
-    elif [[ -d /sys/class/drm/card0/device ]]; then
-        local amd_path="/sys/class/drm/card0/device/power_dpm_force_performance_level"
-        if [[ -f "$amd_path" ]]; then
-            local val=$([[ "$mode" == "on" ]] && echo "high" || echo "auto")
-            echo "$val" | pkexec tee "$amd_path" > /dev/null
-        fi
+boost_usb_irqs() {
+    notify "IRQ: Prioritizing USB threads for Audio Interface"
+    local usb_pids=$(pgrep "irq/.*-usb")
+    if [[ -n "$usb_pids" ]]; then
+        for pid in $usb_pids; do
+            sudo chrt -f -p 95 "$pid"
+        done
     fi
 }
 
 system_optimize() {
     local state=$1
     if [[ "$state" == "on" ]]; then
-        # PipeWire metadata does NOT need root (user level daemon)
-        pw-metadata -n settings 0 clock.force-quantum "$AUDIO_BUFFER" > /dev/null
-        pw-metadata -n settings 0 clock.force-rate "$AUDIO_SAMPLE_RATE" > /dev/null
-
-        cpu_boost "on"
-        gpu_boost "on"
-
-        # IRQ and Modprobe require elevation
-        [[ $(command -v rtirq) ]] && pkexec rtirq restart
-        lsmod | grep -q snd_hrtimer || pkexec modprobe snd_hrtimer
-
-        notify "PRO MODE: $AUDIO_BUFFER / $AUDIO_SAMPLE_RATE Locked."
+        echo "performance" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null
+        if command -v nvidia-settings &>/dev/null; then
+            nvidia-settings -a "[gpu:0]/GPUPowerMizerMode=1" > /dev/null 2>&1
+        fi
+        echo "never" | sudo tee /sys/kernel/mm/transparent_hugepage/enabled > /dev/null
+        echo 10 | sudo tee /proc/sys/vm/swappiness > /dev/null
+        echo 100 | sudo tee /proc/sys/vm/vfs_cache_pressure > /dev/null
+        echo 3072 | sudo tee /sys/class/rtc/rtc0/max_user_freq > /dev/null
+        manage_wifi_latency "boost"
+        boost_usb_irqs
+        [[ $(command -v rtirq) ]] && sudo rtirq restart
+        notify "SYSTEM: Kernel/Hardware optimizations enabled."
     else
-        pw-metadata -n settings 0 clock.force-quantum 0 > /dev/null
-        pw-metadata -n settings 0 clock.force-rate 0 > /dev/null
-        cpu_boost "off"
-        gpu_boost "off"
-        notify "ECO MODE: Balanced power restored."
+        echo "schedutil" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null
+        echo "always" | sudo tee /sys/kernel/mm/transparent_hugepage/enabled > /dev/null
+        echo 60 | sudo tee /proc/sys/vm/swappiness > /dev/null
+        manage_wifi_latency "restore"
+        notify "SYSTEM: Restored to Balanced/Eco Mode."
     fi
 }
 
-# ----------------------------
-# Launch & Selection
-# ----------------------------
-buffers=("32" "48" "64" "96" "128" "192" "256" "512" "1024" "2048")
-rates=("44100" "48000" "88200" "96000")
+apply_audio_settings() {
+    local buffer=$1; local rate=$2
 
-select_buffer_rate() {
-    if [[ "$GUI" == "kdialog" ]]; then
-        AUDIO_BUFFER=$(kdialog --combobox "Select Buffer (Frames)" "${buffers[@]}")
-        AUDIO_SAMPLE_RATE=$(kdialog --combobox "Select Sample Rate" "${rates[@]}")
-    else
-        AUDIO_BUFFER=$(zenity --list --title="Buffer" --column="Frames" "${buffers[@]}")
-        AUDIO_SAMPLE_RATE=$(zenity --list --title="Rate" --column="Hz" "${rates[@]}")
+    if [[ -n "$buffer" ]]; then
+        if pw-metadata -n settings 0 clock.force-quantum "$buffer" >/dev/null 2>&1; then
+            notify "AUDIO: Buffer -> $buffer"
+        else
+            echo "[ERROR] PipeWire unreachable."
+        fi
     fi
-    [[ -z "$AUDIO_BUFFER" ]] && AUDIO_BUFFER=1024
-    [[ -z "$AUDIO_SAMPLE_RATE" ]] && AUDIO_SAMPLE_RATE=48000
-}
-
-launch_daw() {
-    local default_env="WINEFSYNC=1 WINESYNC=1"
-
-    if [[ "$GUI" == "kdialog" ]]; then
-        ENVIRONMENT_VARS=$(kdialog --inputbox "Env Vars:" "$default_env")
-        DAW_PATH=$(kdialog --getopenfilename "/" "Select DAW Executable")
-    else
-        ENVIRONMENT_VARS=$(zenity --entry --title="Env Vars" --entry-text="$default_env")
-        DAW_PATH=$(zenity --file-selection --title="Select DAW Executable")
-    fi
-
-    # Exit if user cancelled file selection
-    [[ -z "$DAW_PATH" ]] && return
-
-    select_buffer_rate
-    system_optimize "on"
-
-    if [[ -x "$DAW_PATH" && ! -d "$DAW_PATH" ]]; then
-        export PIPEWIRE_LATENCY="$AUDIO_BUFFER/$AUDIO_SAMPLE_RATE"
-        # Run DAW as user, but with optimized environment
-        eval "${ENVIRONMENT_VARS} pw-jack -s $AUDIO_SAMPLE_RATE -p $AUDIO_BUFFER \"$DAW_PATH\"" &
-    else
-        notify "Error: Executable not found."
-        system_optimize "off"
+    if [[ -n "$rate" ]]; then
+        pw-metadata -n settings 0 clock.force-rate "$rate" >/dev/null 2>&1
+        notify "AUDIO: Rate -> $rate"
     fi
 }
 
-# ----------------------------
-# Main Loop
-# ----------------------------
-while true; do
-    if [[ "$GUI" == "kdialog" ]]; then
-        MAIN_MENU=$(kdialog --combobox "Arch Audio Control" "Launch DAW (Auto-Optimize)" "Change CPU Schedulers (scxctl)" "Manual Optimization ON" "Manual Optimization OFF" "Exit")
-    else
-        MAIN_MENU=$(zenity --list --title="Arch Audio Control" --column="Options" "Launch DAW (Auto-Optimize)" "Change CPU Schedulers (scxctl)" "Manual Optimization ON" "Manual Optimization OFF" "Exit")
-    fi
+check_status() {
+    echo "--- System Status ---"
+    echo "CPU Governor:    $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)"
 
-    case "$MAIN_MENU" in
-        "Launch DAW (Auto-Optimize)") launch_daw ;;
-        "Change CPU Schedulers (scxctl)") run_scxctl ;;
-        "Manual Optimization ON") select_buffer_rate; system_optimize "on" ;;
-        "Manual Optimization OFF") system_optimize "off" ;;
-        Exit|*) system_optimize "off"; break ;;
+    # Check if C-States are disabled (checking if state1 is disabled is a good proxy)
+    local cstate_status="Enabled (Power Saving)"
+    [[ -e /sys/devices/system/cpu/cpu0/cpuidle/state1/disable && $(cat /sys/devices/system/cpu/cpu0/cpuidle/state1/disable) == "1" ]] && cstate_status="Disabled (Low Latency)"
+    echo "C-States:        $cstate_status"
+
+    echo "Swappiness:      $(cat /proc/sys/vm/swappiness)"
+    echo "Hugepages:       $(grep -o "\[.*\]" /sys/kernel/mm/transparent_hugepage/enabled | tr -d '[]')"
+    echo "Wi-Fi Power:     $(iw dev wlan0 get power_save 2>/dev/null | awk '{print $NF}' || echo "N/A")"
+
+    local lat=$(pw-metadata -n settings 0 2>/dev/null | grep -E 'clock.force-(quantum|rate)' | awk '{print $3}' | xargs echo | sed 's/ /\//')
+    echo "PipeWire Latency: ${lat:-Default (Auto)}"
+    echo "---------------------"
+}
+
+# ----------------------------
+# CLI Argument Parsing
+# ----------------------------
+usage() {
+    echo "Usage: $0 [OPTIONS]"
+    echo ""
+    echo "System Commands (Kernel/Hardware):"
+    echo "  -o on|off             Toggle performance mode (CPU, GPU, THP, Wi-Fi, IRQ)"
+    echo "  -c on|off             Toggle C-States (on=disabled for low latency, off=enabled)"
+    echo ""
+    echo "Audio Server Commands (PipeWire):"
+    echo "  -b [frames]           Set audio buffer (e.g., 128). Use 0 to reset."
+    echo "  -r [hz]                Set sample rate (e.g., 48000). Use 0 to reset."
+    echo ""
+    echo "Scheduler Commands:"
+    echo "  -a start|switch|stop  CPU Scheduler (scxctl) action"
+    echo "  -s [scheduler]        Select scx scheduler (e.g., lavd)"
+    echo "  -m [mode]             Select scheduler mode (e.g., gaming)"
+    echo ""
+    echo "General:"
+    echo "  --status              Show current system optimization status"
+    echo "  -l sched|buffer|rate  List available options"
+    echo "  -h                    Show this help menu"
+    exit 0
+}
+
+[[ $# -eq 0 ]] && usage
+
+for arg in "$@"; do
+    if [[ "$arg" == "--status" ]]; then check_status; exit 0; fi
+done
+
+while getopts "o:c:b:r:s:m:a:l:h" opt; do
+    case "$opt" in
+        o) OPT_STATE=$OPTARG ;;
+        c) CSTATE_STATE=$OPTARG ;;
+        b) AUDIO_BUFFER=$OPTARG ;;
+        r) AUDIO_SAMPLE_RATE=$OPTARG ;;
+        s) CLI_SCHED=$OPTARG ;;
+        m) CLI_MODE=$OPTARG ;;
+        a) CLI_ACTION=$OPTARG ;;
+        l)
+            case "$OPTARG" in
+                sched) get_valid_schedulers; echo "${VALID_SCHEDS[@]}" | tr ' ' '\n' ;;
+                buffer) echo "${buffers[@]}" | tr ' ' '\n' ;;
+                rate) echo "${rates[@]}" | tr ' ' '\n' ;;
+            esac
+            exit 0 ;;
+        h|*) usage ;;
     esac
 done
+
+if [[ -n "$AUDIO_BUFFER" || -n "$AUDIO_SAMPLE_RATE" ]]; then
+    apply_audio_settings "$AUDIO_BUFFER" "$AUDIO_SAMPLE_RATE"
+fi
+
+if [[ -n "$OPT_STATE" ]]; then
+    system_optimize "$OPT_STATE"
+fi
+
+if [[ -n "$CSTATE_STATE" ]]; then
+    manage_cstates "$CSTATE_STATE"
+fi
+
+if [[ -n "$CLI_ACTION" ]]; then
+    [[ "$CLI_ACTION" == "stop" ]] && cpu_sched_stop || cpu_sched_apply "$CLI_ACTION" "$CLI_SCHED" "$CLI_MODE"
+fi
