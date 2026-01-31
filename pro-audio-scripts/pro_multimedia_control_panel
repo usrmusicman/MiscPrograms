@@ -11,6 +11,7 @@
 RT_PRIO_USB=${RT_PRIO_USB:-97}       # Highest: USB Hardware Interrupts (Scarlett)
 RT_PRIO_AUDIO=${RT_PRIO_AUDIO:-95}   # High: PipeWire/Audio Server
 RT_PRIO_DAW=${RT_PRIO_DAW:-93}       # Mid-High: The DAW Engine
+RT_PRIO_WINE=${RT_PRIO_WINE:-91}      # Wine Server Translation Layer
 RT_PRIO_NVIDIA=${RT_PRIO_NVIDIA:-70} # Mid: GPU Driver (Prevents blocking audio)
 
 # Hardware patterns used for boosting and priority cleanup (-o off)
@@ -55,39 +56,51 @@ boost_daw_instant() {
     local p_cores=$(get_p_cores)
     local bin_name=$(basename "$full_path")
 
-    # 1. Try to find PID using the EXACT absolute path
+    # 1. Search for the DAW PID using absolute path [cite: 10]
     local pids=$(pgrep -fx "$full_path" 2>/dev/null)
 
-    # 2. Fallback: If path fails, try finding by binary name (silencing 15-char warning)
+    # 2. Fallback to binary name if path fails [cite: 10]
     if [[ -z "$pids" ]]; then
         pids=$(pgrep -x "$bin_name" 2>/dev/null)
     fi
 
-    # Exit if still nothing is found
-    if [[ -z "$pids" ]]; then
-        echo "[ERROR] Process '$bin_name' not found."
-        echo "Ensure the DAW is running BEFORE running this script."
-        return 1
+    # 3. Target Yabridge Host processes [cite: 10]
+    local yabridge_pids=$(pgrep -f "yabridge-host" 2>/dev/null)
+
+    # 4. Target Wine Server process
+    local wine_pids=$(pgrep -x "wineserver" 2>/dev/null)
+
+    # Combine all targets for processing
+    local all_targets="$pids $yabridge_pids $wine_pids"
+
+    if [[ -z "$(echo -e "${all_targets}" | tr -d '[:space:]')" ]]; then
+        echo "[ERROR] Processes not found. Ensure your DAW is open." [cite: 11, 12]
+        return 1 [cite: 13]
     fi
 
-    notify "DAW: Found $bin_name (PID: $pids). Applying P-Core affinity & RT Prio $RT_PRIO_DAW."
+    notify "BOOST: Optimizing DAW, Yabridge Hosts, and Wine Server..."
 
-    for pid in $pids; do
-        # Pin the process to Performance cores
+    for pid in $all_targets; do
+        # Determine specific priority for this PID
+        local target_prio="$RT_PRIO_DAW"
+        # If the PID is wineserver, use the 91 priority instead of 93
+        ps -p "$pid" -o comm= | grep -q "wineserver" && target_prio="$RT_PRIO_WINE"
+
+        # Pin to Performance cores [cite: 14]
         sudo taskset -pc "$p_cores" "$pid" > /dev/null 2>&1
-        # Apply Real-Time FIFO scheduling
-        sudo chrt -f -p "$RT_PRIO_DAW" "$pid"
+        # Apply Real-Time FIFO scheduling [cite: 14]
+        sudo chrt -f -p "$target_prio" "$pid"
 
-        # Target every sub-thread (the actual audio engine worker threads)
+        # Boost all internal worker threads (DSP, Plugin bridges)
         for thread in /proc/"$pid"/task/*; do
             if [[ -e "$thread" ]]; then
                 local tid="${thread##*/}"
                 sudo taskset -pc "$p_cores" "$tid" > /dev/null 2>&1
-                sudo chrt -f -p "$RT_PRIO_DAW" "$tid" 2>/dev/null
+                sudo chrt -f -p "$target_prio" "$tid" 2>/dev/null
             fi
         done
     done
-    notify "DAW: Optimization complete for $bin_name."
+    notify "BOOST: Audio engine and translation layers optimized." [cite: 17]
 }
 
 # Handles BPF-based Sched-ext schedulers (if installed)
@@ -174,7 +187,7 @@ check_status() {
 # ---------------------------------------------------------
 usage() {
     echo "================================================================"
-    echo "   Universal Pro-Audio Control Panel (v4.0)"
+    echo "   Universal Pro-Audio Control Panel (v4.4)"
     echo "================================================================"
     echo "Usage: [ENV_OVERRIDES] $0 [OPTIONS]"
     echo ""
@@ -183,7 +196,7 @@ usage() {
     echo "  -c on|off             Toggle C-States (on = Disable sleep)"
     echo "  -b [frames]           Set PipeWire Buffer (32, 64, 128, 256, 512)"
     echo "  -r [hz]               Set Sample Rate (44100, 48000, 88200, 96000)"
-    echo "  -d [FULL_PATH]        Boost DAW (Example: /usr/bin/reaper)"
+    echo "  -d [FULL_PATH]        Boost DAW & Plugins (Reaper, Yabridge, Wine)"
     echo ""
     echo "SCHED-EXT (BPF):"
     echo "  -a [start|stop]       Sched-ext action"
@@ -193,6 +206,19 @@ usage() {
     echo "DIAGNOSTICS:"
     echo "  -S                    CHECK STATUS: View active Prio and Gov"
     echo "  -h                    Show this help message"
+    echo ""
+    echo "EXAMPLES:"
+    echo "  1. Full Tracking Mode (Low Latency + Boost):"
+    echo "     sudo $0 -o on -c on -b 64 -r 48000 -d /usr/bin/reaper"
+    echo ""
+    echo "  2. Mixing Mode (Higher Buffer for Stability):"
+    echo "     sudo $0 -o on -b 512 -d /usr/bin/reaper"
+    echo ""
+    echo "  3. Use BPF Scheduler (Rustland):"
+    echo "     sudo $0 -a start -s scx_rustland -m performance"
+    echo ""
+    echo "  4. Restore System to Power Save:"
+    echo "     sudo $0 -o off -c off"
     echo "================================================================"
     exit 0
 }
