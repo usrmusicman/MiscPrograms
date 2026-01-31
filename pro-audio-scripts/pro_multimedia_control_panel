@@ -130,28 +130,43 @@ manage_cstates() {
 # Performance presets: Governor, GPU PowerMizer, and Hardware IRQ Priority
 system_optimize() {
     if [[ "$1" == "on" ]]; then
-        # Set all CPU cores to maximum clock speed
+        # 1. CPU & GPU Performance
         echo "performance" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null
-        # Force NVIDIA GPU out of "Adaptive" power mode into "Prefer Maximum Performance"
         command -v nvidia-settings &>/dev/null && nvidia-settings -a "[gpu:0]/GPUPowerMizerMode=1" > /dev/null 2>&1
-        # Kernel tweaks to reduce paging latency
+
+        # 2. Kernel tweaks to reduce paging latency (Crucial for Kontakt/Samplers)
         echo "never" | sudo tee /sys/kernel/mm/transparent_hugepage/enabled > /dev/null
         echo 10 | sudo tee /proc/sys/vm/swappiness > /dev/null
-        # Elevate Hardware IRQ threads (USB and GPU) to high RT priority
+
+        # 3. Elevate Hardware IRQ threads (USB and GPU)
         pgrep -f "irq/.*-xhci_hcd" 2>/dev/null | xargs -r -I {} sudo chrt -f -p "$RT_PRIO_USB" {}
         pgrep -f "irq/.*-nvidia" 2>/dev/null | xargs -r -I {} sudo chrt -f -p "$RT_PRIO_NVIDIA" {}
+
         notify "SYSTEM: Audio-Performance mode ACTIVE."
     else
-        # Restoration: Return GPU and CPU to balanced/powersave states
+        # 1. Restoration: Return GPU and CPU to balanced/powersave states
         command -v nvidia-settings &>/dev/null && nvidia-settings -a "[gpu:0]/GPUPowerMizerMode=0" > /dev/null 2>&1
         local fb="powersave"
         grep -q "schedutil" /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors && fb="schedutil"
         echo "$fb" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null
-        # Reset boosted hardware threads back to standard scheduling (Priority 0)
+
+        # 2. Reset kernel tweaks to defaults
+        echo "always" | sudo tee /sys/kernel/mm/transparent_hugepage/enabled > /dev/null
+        echo 60 | sudo tee /proc/sys/vm/swappiness > /dev/null
+
+        # 3. Reset boosted hardware threads back to standard scheduling (Priority 0)
         for p in "${!RESTORE_PRIORITIES[@]}"; do
             pgrep -f "irq/.*-$p" 2>/dev/null | xargs -r -I {} sudo chrt -o -p 0 {} 2>/dev/null
         done
-        notify "SYSTEM: Restored to $fb mode."
+
+        # 4. Reset Audio Apps & Translation Layers back to standard (SCHED_OTHER)
+        # This clears RT priority from Reaper, Yabridge-host, and WineServer
+        local apps_to_reset="reaper yabridge-host wineserver"
+        for app in $apps_to_reset; do
+            pgrep -f "$app" 2>/dev/null | xargs -r -I {} sudo chrt -o -p 0 {} 2>/dev/null
+        done
+
+        notify "SYSTEM: Restored to $fb mode and cleared RT priorities."
     fi
 }
 
