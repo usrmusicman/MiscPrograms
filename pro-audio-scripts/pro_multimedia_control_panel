@@ -1,247 +1,161 @@
 #!/bin/bash
 # ==============================================================================
-# Universal Pro-Audio Control Panel (v4.0) - "The Absolute Watcher + SCX"
-# Optimized for: 12700K/Core Ultra (Hybrid), Ryzen (ACP), and Scarlett 2i2
+# Universal Pro-Audio Control Panel (v6.1) - "The IRQ & Hybrid Fix"
 # ==============================================================================
 
-# ---------------------------------------------------------
-# 1. CONFIGURATION & REAL-TIME PRIORITY STAIRCASE
-# ---------------------------------------------------------
-# Priorities use SCHED_FIFO (1-99). Higher = More "Urgent".
-RT_PRIO_USB=${RT_PRIO_USB:-97}       # Highest: USB Hardware Interrupts (Scarlett)
-RT_PRIO_AUDIO=${RT_PRIO_AUDIO:-95}   # High: PipeWire/Audio Server
-RT_PRIO_DAW=${RT_PRIO_DAW:-93}       # Mid-High: The DAW Engine
-RT_PRIO_WINE=${RT_PRIO_WINE:-91}      # Wine Server Translation Layer
-RT_PRIO_NVIDIA=${RT_PRIO_NVIDIA:-70} # Mid: GPU Driver (Prevents blocking audio)
+# 1. CONFIGURATION
+RT_PRIO_USB=97       # Scarlett 2i2
+RT_PRIO_AUDIO=95     # PipeWire
+RT_PRIO_DAW=93       # Reaper / Plugins
+RT_PRIO_WINE=91      # Wineserver
+RT_PRIO_NVIDIA=70    # GPU
 
-# Hardware patterns used for boosting and priority cleanup (-o off)
-declare -A RESTORE_PRIORITIES=(
-    ["xhci_hcd"]=0 ["nvidia"]=0 ["nvme"]=0
-    ["snd_hda_intel"]=0 ["snd_acp"]=0 ["snd_rn_pci_acp"]=0
-)
-
+declare -A RESTORE_PRIORITIES=( ["xhci_hcd"]=0 ["nvidia"]=0 ["nvme"]=0 )
 notify() { echo -e "[INFO] $1"; }
 
 # ---------------------------------------------------------
-# 2. DYNAMIC TOPOLOGY DETECTION (Hybrid CPU / P-Cores)
+# 2. SCHED-EXT HANDLING (Stop then Start - No Switch)
 # ---------------------------------------------------------
-get_p_cores() {
-    # Detects Performance Cores by identifying CPUs with the highest clock speed.
-    # This prevents threads from being "parked" on slower E-cores/LP-E cores.
-    local max_freq=$(cat /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq 2>/dev/null | sort -nr | head -n1)
-    if [[ -z "$max_freq" ]]; then
-        # Fallback: Use all cores if the freq scaling driver is absent
-        echo "0-$(($(nproc) - 1))"; return
+cpu_sched_apply() {
+    local action=$1; local sched=$2; local mode=$3
+    if [[ "$action" == "stop" ]]; then
+        sudo scxctl stop 2>/dev/null && notify "SCHED-EXT: BPF scheduler stopped."
+        return 0
     fi
-    # Generate a comma-separated list of CPU indices matching that max frequency
-    local p_cores=$(grep -l "$max_freq" /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq | grep -oP 'cpu\K[0-9]+' | sort -n | xargs | tr ' ' ',')
-    [[ -z "$p_cores" ]] && echo "0-$(($(nproc) - 1))" || echo "$p_cores"
+    [[ -z "$sched" || -z "$mode" ]] && { echo "[ERROR] Sched-ext requires -s and -m."; return 1; }
+
+    # Per instructions: Stop then Start (never use 'switch')
+    notify "SCHED-EXT: Resetting scheduler slot..."
+    sudo scxctl stop 2>/dev/null
+    sleep 0.5
+    notify "SCHED-EXT: Starting $sched ($mode)..."
+    sudo scxctl start --sched "$sched" --mode "$mode" && notify "SCHED-EXT: $sched is now ACTIVE."
 }
 
 # ---------------------------------------------------------
-# 3. CORE TUNING FUNCTIONS
+# 3. TOPOLOGY & TUNING
 # ---------------------------------------------------------
+manage_cstates() {
+    if [[ "$1" == "on" ]]; then
+        sudo cpupower idle-set -D 0 >/dev/null 2>&1
+        notify "CPU: C-States DISABLED (Sleep prevention active)."
+    else
+        sudo cpupower idle-set -E >/dev/null 2>&1
+        notify "CPU: C-States ENABLED."
+    fi
+}
 
-# Sets PipeWire server quantum (buffer) and sample rate
+get_p_cores() {
+    local max_freq=$(cat /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq 2>/dev/null | sort -nr | head -n1)
+    [[ -z "$max_freq" ]] && { echo "0-$(($(nproc) - 1))"; return; }
+    grep -l "$max_freq" /sys/devices/system/cpu/cpu*/cpufreq/cpuinfo_max_freq | grep -oP 'cpu\K[0-9]+' | sort -n | xargs | tr ' ' ','
+}
+
 apply_audio_settings() {
-    # Uses pw-metadata to live-switch PipeWire settings
     [[ -n "$1" ]] && pw-metadata -n settings 0 clock.force-quantum "$1" >/dev/null 2>&1
     [[ -n "$2" ]] && pw-metadata -n settings 0 clock.force-rate "$2" >/dev/null 2>&1
     notify "AUDIO: PipeWire reconfigured to $1 @ $2 Hz."
 }
 
-# Boost DAW: Takes the ABSOLUTE PATH to prevent pgrep truncation errors
 boost_daw_instant() {
-    local full_path="$1"
     local p_cores=$(get_p_cores)
-    local bin_name=$(basename "$full_path")
-
-    # 1. Search for the DAW PID using absolute path [cite: 10]
-    local pids=$(pgrep -fx "$full_path" 2>/dev/null)
-
-    # 2. Fallback to binary name if path fails [cite: 10]
-    if [[ -z "$pids" ]]; then
-        pids=$(pgrep -x "$bin_name" 2>/dev/null)
-    fi
-
-    # 3. Target Yabridge Host processes [cite: 10]
-    local yabridge_pids=$(pgrep -f "yabridge-host" 2>/dev/null)
-
-    # 4. Target Wine Server process
-    local wine_pids=$(pgrep -x "wineserver" 2>/dev/null)
-
-    # Combine all targets for processing
-    local all_targets="$pids $yabridge_pids $wine_pids"
-
-    if [[ -z "$(echo -e "${all_targets}" | tr -d '[:space:]')" ]]; then
-        echo "[ERROR] Processes not found. Ensure your DAW is open." [cite: 11, 12]
-        return 1 [cite: 13]
-    fi
-
-    notify "BOOST: Optimizing DAW, Yabridge Hosts, and Wine Server..."
+    local all_targets=$(pgrep -f "reaper|yabridge|wineserver|\.exe" | grep -v "oom_reaper")
 
     for pid in $all_targets; do
-        # Determine specific priority for this PID
-        local target_prio="$RT_PRIO_DAW"
-        # If the PID is wineserver, use the 91 priority instead of 93
-        ps -p "$pid" -o comm= | grep -q "wineserver" && target_prio="$RT_PRIO_WINE"
+        local target_prio=$RT_PRIO_DAW
+        [[ $(ps -p "$pid" -o comm=) == "wineserver" ]] && target_prio=$RT_PRIO_WINE
 
-        # Pin to Performance cores [cite: 14]
         sudo taskset -pc "$p_cores" "$pid" > /dev/null 2>&1
-        # Apply Real-Time FIFO scheduling [cite: 14]
-        sudo chrt -f -p "$target_prio" "$pid"
+        sudo chrt -f -p "$target_prio" "$pid" 2>/dev/null
 
-        # Boost all internal worker threads (DSP, Plugin bridges)
         for thread in /proc/"$pid"/task/*; do
-            if [[ -e "$thread" ]]; then
-                local tid="${thread##*/}"
-                sudo taskset -pc "$p_cores" "$tid" > /dev/null 2>&1
-                sudo chrt -f -p "$target_prio" "$tid" 2>/dev/null
-            fi
+            [ -e "$thread" ] && sudo chrt -f -p "$target_prio" "${thread##*/}" 2>/dev/null
         done
     done
-    notify "BOOST: Audio engine and translation layers optimized." [cite: 17]
+    notify "BOOST: DAW stack optimized."
 }
 
-# Handles BPF-based Sched-ext schedulers (if installed)
-cpu_sched_apply() {
-    local action=$1; local sched=$2; local mode=$3
-    # If action is 'stop', kill the active BPF scheduler
-    if [[ "$action" == "stop" ]]; then
-        sudo scxctl stop && notify "SCHED-EXT: BPF scheduler stopped."
-        return 0
-    fi
-    # Ensure -s (scheduler) and -m (mode) are provided
-    [[ -z "$sched" || -z "$mode" ]] && { echo "[ERROR] Sched-ext requires -s (name) and -m (mode)."; return 1; }
-    # Run the specific scheduler via scxctl
-    sudo scxctl "$action" --sched "$sched" --mode "$mode" && notify "SCHED-EXT: $action -> $sched ($mode)."
-}
-
-# Toggles CPU C-States: Prevents CPU from "sleeping" during micro-silence
-manage_cstates() {
-    # 1 = Disable sleep (High Perf), 0 = Enable (Power Save)
-    local val=$([[ "$1" == "on" ]] && echo 1 || echo 0)
-    for d in /sys/devices/system/cpu/cpu*/cpuidle/state*/disable; do
-        echo "$val" | sudo tee "$d" > /dev/null 2>&1
-    done
-    notify "CPU: C-States $([[ "$1" == "on" ]] && echo "DISABLED (Locked to C0)" || echo "ENABLED")."
-}
-
-# Performance presets: Governor, GPU PowerMizer, and Hardware IRQ Priority
+# ---------------------------------------------------------
+# 4. SYSTEM OPTIMIZATION & DIAGNOSTICS
+# ---------------------------------------------------------
 system_optimize() {
     if [[ "$1" == "on" ]]; then
-        # 1. CPU & GPU Performance
         echo "performance" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null
         command -v nvidia-settings &>/dev/null && nvidia-settings -a "[gpu:0]/GPUPowerMizerMode=1" > /dev/null 2>&1
 
-        # 2. Kernel tweaks to reduce paging latency (Crucial for Kontakt/Samplers)
+        # Pin and Elevate IRQs: Scarlett (USB) on Core 0 | NVIDIA on Core 2
+        pgrep -f "irq/.*-xhci_hcd" | xargs -r -I {} sudo sh -c "taskset -pc 0 {} && chrt -f -p $RT_PRIO_USB {}" >/dev/null 2>&1
+        pgrep -f "irq/.*-nvidia" | xargs -r -I {} sudo sh -c "taskset -pc 2 {} && chrt -f -p $RT_PRIO_NVIDIA {}" >/dev/null 2>&1
+
         echo "never" | sudo tee /sys/kernel/mm/transparent_hugepage/enabled > /dev/null
         echo 10 | sudo tee /proc/sys/vm/swappiness > /dev/null
-
-        # 3. Elevate Hardware IRQ threads (USB and GPU)
-        pgrep -f "irq/.*-xhci_hcd" 2>/dev/null | xargs -r -I {} sudo chrt -f -p "$RT_PRIO_USB" {}
-        pgrep -f "irq/.*-nvidia" 2>/dev/null | xargs -r -I {} sudo chrt -f -p "$RT_PRIO_NVIDIA" {}
-
-        notify "SYSTEM: Audio-Performance mode ACTIVE."
+        notify "SYSTEM: Performance mode ACTIVE."
     else
-        # 1. Restoration: Return GPU and CPU to balanced/powersave states
-        command -v nvidia-settings &>/dev/null && nvidia-settings -a "[gpu:0]/GPUPowerMizerMode=0" > /dev/null 2>&1
         local fb="powersave"
         grep -q "schedutil" /sys/devices/system/cpu/cpu0/cpufreq/scaling_available_governors && fb="schedutil"
         echo "$fb" | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor > /dev/null
-
-        # 2. Reset kernel tweaks to defaults
-        echo "always" | sudo tee /sys/kernel/mm/transparent_hugepage/enabled > /dev/null
-        echo 60 | sudo tee /proc/sys/vm/swappiness > /dev/null
-
-        # 3. Reset boosted hardware threads back to standard scheduling (Priority 0)
-        for p in "${!RESTORE_PRIORITIES[@]}"; do
-            pgrep -f "irq/.*-$p" 2>/dev/null | xargs -r -I {} sudo chrt -o -p 0 {} 2>/dev/null
-        done
-
-        # 4. Reset Audio Apps & Translation Layers back to standard (SCHED_OTHER)
-        # This clears RT priority from Reaper, Yabridge-host, and WineServer
-        local apps_to_reset="reaper yabridge-host wineserver"
-        for app in $apps_to_reset; do
-            pgrep -f "$app" 2>/dev/null | xargs -r -I {} sudo chrt -o -p 0 {} 2>/dev/null
-        done
-
-        notify "SYSTEM: Restored to $fb mode and cleared RT priorities."
+        pgrep -f "irq/" | xargs -r -I {} sudo taskset -pc "0-$(($(nproc)-1))" {} >/dev/null
+        notify "SESSION ENDED: Defaults restored."
     fi
 }
 
-# ---------------------------------------------------------
-# 4. DIAGNOSTIC STATUS REPORT
-# ---------------------------------------------------------
 check_status() {
     echo "================================================================"
-    echo "   SYSTEM AUDIO STATUS REPORT (v4.0)"
+    echo "    SYSTEM AUDIO STATUS REPORT"
     echo "================================================================"
-    # Extract current PipeWire quantum and rate
-    local pwq=$(pw-metadata -n settings 0 clock.force-quantum | grep -oP 'value:\K.*' || echo "Default")
-    local pwr=$(pw-metadata -n settings 0 clock.force-rate | grep -oP 'value:\K.*' || echo "Default")
-    echo -e "PipeWire:   Buffer: ${pwq} | Rate: ${pwr}"
-    echo -e "CPU Gov:    $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)"
-    echo -e "P-Cores:    $(get_p_cores)"
-
-    echo "DAW Boost:  User Processes (RT):"
-    # Show RT processes excluding kernel housekeeping threads
-    local dpids=$(ps -eo rtprio,comm | awk '$1 > 0 && $2 !~ /irq|migration|ksoft/ {print "            - " $2 " (Prio: " $1 ")"}' | sort -u)
-    [[ -z "$dpids" ]] && echo "            None detected." || echo "$dpids"
-
-    echo "IRQ Boost:  Hardware Threads (RT):"
-    # Search for hardware patterns defined in section 1
-    local pat=$(echo "${!RESTORE_PRIORITIES[@]}" | tr ' ' '|')
-    local irqs=$(ps -eo rtprio,comm | grep -E "$pat" | awk '$1 > 0 {print "            - " $2 " (Prio: " $1 ")"}' | sort -u)
-    [[ -z "$irqs" ]] && echo "            Standard Priority (0)." || echo "$irqs"
+    echo -e "PipeWire:    Buffer: $(pw-metadata -n settings 0 clock.force-quantum | grep -oP 'value:\K.*') | Rate: $(pw-metadata -n settings 0 clock.force-rate | grep -oP 'value:\K.*')"
+    echo -e "CPU Gov:     $(cat /sys/devices/system/cpu/cpu0/cpufreq/scaling_governor)"
+    echo -e "Memory:      Swappiness: $(cat /proc/sys/vm/swappiness) | HugePages: $(cat /sys/kernel/mm/transparent_hugepage/enabled | grep -o '\[.*\]')"
+    echo "Audio Stack (RT):"
+    ps -eo rtprio,comm | awk '$1 > 0 && $2 !~ /idle_inject|ktimers|rcu|watchdog|migration|oom_reaper/ {print "            - " $2 " (Prio: " $1 ")"}' | sort -u | grep -Ei "reaper|yabridge|wine|pipewire|jack" || echo "            None active."
+    echo "Hardware IRQs (RT):"
+    ps -eo rtprio,psr,comm | grep -Ei "xhci|nvidia" | awk '$1 > 0 {print "            - " $3 " (Prio: " $1 " | Core: " $2 ")"}' | sort -u || echo "            Standard Priority (0)."
     echo "================================================================"
 }
 
 # ---------------------------------------------------------
-# 5. USAGE AND HELP MENU
+# 5. EXECUTION & MONITORING
 # ---------------------------------------------------------
+launch_and_monitor() {
+    local path="$1"
+    [[ "$OPT_STATE" == "on" ]] && system_optimize "on"
+    [[ "$CSTATE_STATE" == "on" ]] && manage_cstates "on"
+
+    notify "LAUNCHING DAW: $path"
+    env WINEFSYNC=1 "$path" &
+
+    while ! pgrep -f "$(basename "$path")" > /dev/null; do sleep 1; done
+    sleep 5
+    boost_daw_instant "$path"
+    while pgrep -x "$(basename "$path")" > /dev/null; do sleep 2; done
+
+    notify "DAW Closed. Cleaning up..."
+    [[ "$OPT_STATE" == "on" ]] && system_optimize "off"
+    [[ "$CSTATE_STATE" == "on" ]] && manage_cstates "off"
+    sudo scxctl stop 2>/dev/null
+}
+
 usage() {
-    echo "================================================================"
-    echo "   Universal Pro-Audio Control Panel (v4.4)"
-    echo "================================================================"
-    echo "Usage: [ENV_OVERRIDES] $0 [OPTIONS]"
-    echo ""
-    echo "CORE TUNING:"
-    echo "  -o on|off             System Perf (CPU Governor, GPU, USB IRQs)"
-    echo "  -c on|off             Toggle C-States (on = Disable sleep)"
-    echo "  -b [frames]           Set PipeWire Buffer (32, 64, 128, 256, 512)"
-    echo "  -r [hz]               Set Sample Rate (44100, 48000, 88200, 96000)"
-    echo "  -d [FULL_PATH]        Boost DAW & Plugins (Reaper, Yabridge, Wine)"
-    echo ""
-    echo "SCHED-EXT (BPF):"
-    echo "  -a [start|stop]       Sched-ext action"
-    echo "  -s [name]             Scheduler name (e.g., scx_rustland)"
-    echo "  -m [mode]             Scheduler mode (e.g., performance)"
-    echo ""
-    echo "DIAGNOSTICS:"
-    echo "  -S                    CHECK STATUS: View active Prio and Gov"
-    echo "  -h                    Show this help message"
-    echo ""
-    echo "EXAMPLES:"
-    echo "  1. Full Tracking Mode (Low Latency + Boost):"
-    echo "     sudo $0 -o on -c on -b 64 -r 48000 -d /usr/bin/reaper"
-    echo ""
-    echo "  2. Mixing Mode (Higher Buffer for Stability):"
-    echo "     sudo $0 -o on -b 512 -d /usr/bin/reaper"
-    echo ""
-    echo "  3. Use BPF Scheduler (Rustland):"
-    echo "     sudo $0 -a start -s scx_rustland -m performance"
-    echo ""
-    echo "  4. Restore System to Power Save:"
-    echo "     sudo $0 -o off -c off"
-    echo "================================================================"
+    echo "Usage: sudo WINEFSYNC=1 $0 [OPTIONS]"
+    echo "  -o on|off     System Perf (CPU/GPU)"
+    echo "  -c on|off     Toggle C-States"
+    echo "  -b [frames]   Buffer size"
+    echo "  -r [hz]       Sample Rate"
+    echo "  -d [path]     DAW path"
+    echo "  -a start|stop SCX action"
+    echo "  -s [name]     SCX scheduler"
+    echo "  -m [mode]     SCX mode"
+    echo "  -S            Status check"
+    echo "  -h            Help"
     exit 0
 }
 
+# ---------------------------------------------------------
+# 6. MAIN FLOW
+# ---------------------------------------------------------
 [[ $# -eq 0 ]] && usage
 
-# Updated getopts to include a:s:m: for scxctl logic
-while getopts "o:c:b:r:d:a:s:m:S" opt; do
+while getopts "o:c:b:r:d:a:s:m:Sh" opt; do
     case "$opt" in
         o) OPT_STATE=$OPTARG ;;
         c) CSTATE_STATE=$OPTARG ;;
@@ -252,26 +166,19 @@ while getopts "o:c:b:r:d:a:s:m:S" opt; do
         s) CLI_SCHED=$OPTARG ;;
         m) CLI_MODE=$OPTARG ;;
         S) STATUS_CHECK=true ;;
-        h|*) usage ;;
+        h) usage ;;
+        *) usage ;;
     esac
 done
 
-# --- EXECUTION FLOW ---
-
-# 1. Apply Buffer/Rate first
 [[ -n "$AUDIO_BUFFER" || -n "$AUDIO_SAMPLE_RATE" ]] && apply_audio_settings "$AUDIO_BUFFER" "$AUDIO_SAMPLE_RATE"
-
-# 2. Global Performance settings
-[[ -n "$OPT_STATE" ]] && system_optimize "$OPT_STATE"
-[[ -n "$CSTATE_STATE" ]] && manage_cstates "$CSTATE_STATE"
-
-# 3. CPU Scheduler (Sched-ext)
-
 [[ -n "$CLI_ACTION" ]] && cpu_sched_apply "$CLI_ACTION" "$CLI_SCHED" "$CLI_MODE"
 
-# 4. Final step: Boost the DAW application
+if [[ -n "$DAW_PATH" ]]; then
+    launch_and_monitor "$DAW_PATH"
+else
+    [[ -n "$OPT_STATE" ]] && system_optimize "$OPT_STATE"
+    [[ -n "$CSTATE_STATE" ]] && manage_cstates "$CSTATE_STATE"
+fi
 
-[[ -n "$DAW_PATH" ]] && boost_daw_instant "$DAW_PATH"
-
-# 5. Check the status of your system audio changes
 [[ "$STATUS_CHECK" == true ]] && check_status
