@@ -1,232 +1,167 @@
 #!/usr/bin/env bash
-# YaVST Control Panel - System Wine/WineASIO/YaBridge
-# Works on Arch/EndeavourOS/Fedora
+# YaVST CLI Manager - Regular & Immutable Unified
 set -Eeuo pipefail
 IFS=$'\n\t'
 
+# -------------------------
+# Configuration & Paths
+# -------------------------
 HOME="${HOME:-/home/$(id -un)}"
+BUNDLE_PATH="$HOME/.local/bin/YaVST"
+DOWNLOAD_PATH="$HOME/Downloads"
+YABRIDGE_ROOT="$BUNDLE_PATH/yabridge"
+YABRIDGECTL_PATH="$YABRIDGE_ROOT/yabridgectl"
+
+# Versions for Immutable Setup
+WINE_VER="9.21"
+YABRIDGE_VER="5.1.1"
+WINEASIO_VER="1.3.0"
+WINEASIO_REV="2.1"
+WINE_BUILD_NAME="staging-tkg-amd64"
 
 # -------------------------
-# Detect dialog tool
+# System Detection
 # -------------------------
-if command -v zenity >/dev/null 2>&1; then
-    DIALOG_TOOL="zenity"
+is_immutable() {
+    # Checks for SteamOS or Fedora Silverblue/Kinoite/Bazzite
+    if [[ -f /etc/steamos-release ]] || [[ -d /sysroot/ostree ]]; then
+        return 0
+    fi
+    return 1
+}
+
+log_msg() { echo -e "\e[1;34m[$(date '+%H:%M:%S')]\e[0m $*"; }
+error_exit() { echo -e "\e[1;31mERROR:\e[0m $*" >&2; exit 1; }
+
+# -------------------------
+# Feature: Wine & Yabridge Installation
+# -------------------------
+install_core() {
+    if is_immutable; then
+        log_msg "Immutable system detected. Installing portable bundle..."
+        mkdir -p "$BUNDLE_PATH" "$DOWNLOAD_PATH"
+
+        # Wine Installation
+        local wine_file="wine-${WINE_VER}-${WINE_BUILD_NAME}.tar.xz"
+        wget -c "https://github.com/Kron4ek/Wine-Builds/releases/download/${WINE_VER}/$wine_file" -O "$DOWNLOAD_PATH/$wine_file"
+        rm -rf "$BUNDLE_PATH/bin" "$BUNDLE_PATH/lib" "$BUNDLE_PATH/share"
+        tar -xJf "$DOWNLOAD_PATH/$wine_file" -C "$BUNDLE_PATH" --strip-components=1
+
+        # Yabridge Installation
+        local y_file="yabridge-${YABRIDGE_VER}.tar.gz"
+        wget -c "https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VER}/$y_file" -O "$DOWNLOAD_PATH/$y_file"
+        rm -rf "$YABRIDGE_ROOT"
+        mkdir -p "$YABRIDGE_ROOT"
+        tar -xzf "$DOWNLOAD_PATH/$y_file" -C "$YABRIDGE_ROOT" --strip-components=1
+
+        setup_env_script
+    else
+        log_msg "Regular distro detected. Please ensure 'wine' and 'yabridge' are installed via your package manager."
+    fi
+}
+
+# -------------------------
+# Feature: WineASIO Setup
+# -------------------------
+setup_wineasio() {
+    local prefix="${WINEPREFIX:-$HOME/.wine}"
+
+    if is_immutable; then
+        log_msg "Immutable: Extracting WineASIO into portable bundle..."
+        local pkg="wineasio-${WINEASIO_VER}-${WINEASIO_REV}-x86_64.pkg.tar.zst"
+        wget -c "https://builds.garudalinux.org/repos/chaotic-aur/x86_64/$pkg" -O "$DOWNLOAD_PATH/$pkg"
+
+        local temp=$(mktemp -d)
+        tar -I zstd -xf "$DOWNLOAD_PATH/$pkg" -C "$temp"
+
+        cp -v "$temp"/usr/lib/wine/x86_64-windows/wineasio64.dll "$prefix/drive_c/windows/system32/"
+        mkdir -p "$BUNDLE_PATH/lib/wine/x86_64-unix"
+        cp -v "$temp"/usr/lib/wine/x86_64-unix/wineasio64.dll.so "$BUNDLE_PATH/lib/wine/x86_64-unix/"
+        rm -rf "$temp"
+    else
+        log_msg "Regular: Registering system-wide WineASIO..."
+        local sys_dll64="/usr/lib/wine/x86_64-unix/wineasio64.dll.so"
+        if [[ -f "$sys_dll64" ]]; then
+            cp -v "$sys_dll64" "$prefix/drive_c/windows/system32/"
+            wine regsvr32 wineasio64.dll
+        else
+            error_exit "System WineASIO DLL not found. Please install the wineasio package."
+        fi
+    fi
+}
+
+# -------------------------
+# Environment Management
+# -------------------------
+setup_env_script() {
+    local env_file="$HOME/.config/yavst/env.sh"
+    mkdir -p "$(dirname "$env_file")"
+    cat > "$env_file" <<EOF
+export PATH="$BUNDLE_PATH/bin:$YABRIDGE_ROOT:\$PATH"
+export WINELOADER="$BUNDLE_PATH/bin/wine"
+export WINESERVER="$BUNDLE_PATH/bin/wineserver"
+export WINEDLLPATH="$BUNDLE_PATH/lib/wine"
+EOF
+    log_msg "Environment script created at $env_file. Source this in your .bashrc or .zshrc."
+}
+
+# -------------------------
+# Main Execution Logic
+# -------------------------
+show_help() {
+    cat <<EOF
+YaVST CLI Manager
+Usage: $(basename "$0") [flag]
+
+Commands:
+  --install        Install/Update Wine & Yabridge (Portable on Immutable)
+  --wineasio       Register WineASIO DLLs in current WINEPREFIX
+  --add [path]     Add a VST directory to Yabridge
+  --remove [path]  Remove a VST directory from Yabridge
+  --sync           Manually trigger yabridgectl sync
+  --list           List currently tracked VST directories
+  --help           Show this message
+EOF
+}
+
+# Determine which yabridgectl binary to use
+if is_immutable; then
+    YCTL="$YABRIDGECTL_PATH"
 else
-    echo "Zenity not found. Please install zenity."
-    exit 1
+    YCTL=$(command -v yabridgectl || echo "yabridgectl")
 fi
 
-if [[ "${XDG_CURRENT_DESKTOP:-}" == *KDE* ]] && command -v kdialog >/dev/null 2>&1; then
-    DIALOG_TOOL="kdialog"
-fi
+[[ $# -eq 0 ]] && { show_help; exit 0; }
 
-# -------------------------
-# Detect system binaries
-# -------------------------
-WINE_BIN=$(command -v wine64 || command -v wine) || {
-    if [[ "$DIALOG_TOOL" == "kdialog" ]]; then
-        kdialog --error "Wine not found. Please install wine or wine-staging."
-    else
-        zenity --error --text="Wine not found. Please install wine or wine-staging."
-    fi
-    exit 1
-}
-
-# System WineASIO DLLs
-WINEASIO_DLL64="/usr/lib/wine/x86_64-unix/wineasio64.dll.so"
-WINEASIO_DLL32="/usr/lib/wine/i386-unix/wineasio.dll.so"
-[[ -f "$WINEASIO_DLL64" || -f "$WINEASIO_DLL32" ]] || {
-    if [[ "$DIALOG_TOOL" == "kdialog" ]]; then
-        kdialog --error "WineASIO DLL not found. Install wineasio package."
-    else
-        zenity --error --text="WineASIO DLL not found. Install wineasio package."
-    fi
-    exit 1
-}
-
-YABRIDGECTL_BIN=$(command -v yabridgectl) || {
-    if [[ "$DIALOG_TOOL" == "kdialog" ]]; then
-        kdialog --error "yabridgectl not found. Please install yabridge."
-    else
-        zenity --error --text="yabridgectl not found. Please install yabridge."
-    fi
-    exit 1
-}
-
-# -------------------------
-# Helper functions
-# -------------------------
-show_info() {
-    local msg="$1"
-    if [[ "$DIALOG_TOOL" == "kdialog" ]]; then
-        kdialog --msgbox "$msg"
-    else
-        zenity --info --text="$msg"
-    fi
-}
-
-show_error() {
-    local msg="$1"
-    if [[ "$DIALOG_TOOL" == "kdialog" ]]; then
-        kdialog --error "$msg"
-    else
-        zenity --error --text="$msg"
-    fi
-}
-
-select_dir() {
-    local dir=""
-    if [[ "$DIALOG_TOOL" == "kdialog" ]]; then
-        dir=$(kdialog --getexistingdirectory "$HOME" "Select Directory") || return
-    else
-        dir=$(zenity --file-selection --directory --title="Select Directory") || return
-    fi
-    [[ -d "$dir" ]] && echo "$dir"
-}
-
-select_vst_dir_kde() {
-    # Optional: present common VST paths in KDE
-    local common_dirs=(
-        "$HOME/.vst"
-        "$HOME/.vst3"
-        "$HOME/.wine/drive_c/Program Files/VSTPlugins"
-        "$HOME/.wine/drive_c/Program Files/Common Files/VST2"
-        "$HOME/.wine/drive_c/Program Files/Common Files/VST3"
-        "$HOME/VST"
-        "$HOME/VST3"
-    )
-
-    local menu_args=()
-    local i=1
-    for d in "${common_dirs[@]}"; do
-        [[ -d "$d" ]] || continue
-        menu_args+=("$i" "$d")
-        ((i++))
-    done
-    menu_args+=("0" "Choose manually…")
-
-    local sel
-    sel=$(kdialog --menu "Select VST Directory to Add" "${menu_args[@]}") || return
-
-    if [[ "$sel" == "0" ]]; then
-        select_dir
-    else
-        local idx=0
-        for ((j=0;j<${#menu_args[@]};j+=2)); do
-            [[ "${menu_args[j]}" == "$sel" ]] && idx=$((j+1))
-        done
-        echo "${menu_args[idx]}"
-    fi
-}
-
-# -------------------------
-# Core functions
-# -------------------------
-configure_winasio() {
-    # Let user select WINEPREFIX
-    local selected_prefix=""
-    if [[ "$DIALOG_TOOL" == "kdialog" ]]; then
-        selected_prefix=$(kdialog --getexistingdirectory "$HOME" "Select WINEPREFIX") || return
-    else
-        selected_prefix=$(zenity --file-selection --directory --title="Select WINEPREFIX") || return
-    fi
-
-    [[ -d "$selected_prefix" ]] || { show_error "Invalid directory selected"; return; }
-
-    local target="$selected_prefix/drive_c/windows/system32/"
-    mkdir -p "$target"
-
-    local dll=""
-    if [[ -f "$WINEASIO_DLL64" ]]; then
-        dll="$WINEASIO_DLL64"
-    elif [[ -f "$WINEASIO_DLL32" ]]; then
-        dll="$WINEASIO_DLL32"
-    fi
-
-    cp -v "$dll" "$target/"
-    show_info "WineASIO registered in prefix:\n$selected_prefix"
-}
-
-add_vst_dir() {
-    local dir=""
-    if [[ "$DIALOG_TOOL" == "kdialog" ]]; then
-        dir=$(select_vst_dir_kde) || return
-    else
-        dir=$(select_dir) || return
-    fi
-
-    "$YABRIDGECTL_BIN" add "$dir"
-    "$YABRIDGECTL_BIN" sync
-    show_info "Added VST directory:\n$dir"
-}
-
-remove_vst_dir() {
-    mapfile -t dirs < <("$YABRIDGECTL_BIN" list)
-    [[ ${#dirs[@]} -gt 0 ]] || { show_info "No VST directories to remove"; return; }
-
-    local sel=""
-    if [[ "$DIALOG_TOOL" == "kdialog" ]]; then
-        local menu_args=()
-        for i in "${!dirs[@]}"; do
-            menu_args+=("$i" "${dirs[$i]}")
-        done
-        sel=$(kdialog --menu "Select VST directory to remove" "${menu_args[@]}") || return
-    else
-        local zenity_input=()
-        for i in "${!dirs[@]}"; do
-            zenity_input+=("$i" "${dirs[$i]}")
-        done
-        sel=$(zenity --list --title="Remove VST directory" --column="Index" --column="Directory" "${zenity_input[@]}") || return
-    fi
-
-    [[ -n "${dirs[$sel]:-}" ]] || { show_error "Invalid selection"; return; }
-    "$YABRIDGECTL_BIN" rm "${dirs[$sel]}"
-    "$YABRIDGECTL_BIN" sync
-    show_info "Removed VST directory:\n${dirs[$sel]}"
-}
-
-rescan_vsts() {
-    "$YABRIDGECTL_BIN" sync
-    show_info "VST rescan complete."
-}
-
-edit_yabridgectl_config() {
-    local config_file="$HOME/.config/yabridgectl/config.toml"
-    [[ -f "$config_file" ]] || { show_error "Config file not found at $config_file"; return; }
-    xdg-open "$config_file" || show_error "Failed to open config file."
-}
-
-# -------------------------
-# Main loop
-# -------------------------
-action=""
-while true; do
-    action=""
-    if [[ "$DIALOG_TOOL" == "kdialog" ]]; then
-        action=$(kdialog --menu "YaVST Control Panel" \
-            "1" "Register WineASIO in Wine Prefix" \
-            "2" "Add VST Directory" \
-            "3" "Remove VST Directory" \
-            "4" "Rescan VSTs" \
-            "5" "Edit yabridgectl Config" \
-            "6" "Exit") || continue
-    else
-        action=$(zenity --list --title="YaVST Control Panel" --column="Action" \
-            "Register WineASIO in Wine Prefix" \
-            "Add VST Directory" \
-            "Remove VST Directory" \
-            "Rescan VSTs" \
-            "Edit yabridgectl Config" \
-            "Exit") || continue
-    fi
-
-    case "$action" in
-        "1"|"Register WineASIO in Wine Prefix") configure_winasio ;;
-        "2"|"Add VST Directory") add_vst_dir ;;
-        "3"|"Remove VST Directory") remove_vst_dir ;;
-        "4"|"Rescan VSTs") rescan_vsts ;;
-        "5"|"Edit yabridgectl Config") edit_yabridgectl_config ;;
-        "6"|"Exit") break ;;
-        *) show_error "Unknown action: $action" ;;
-    esac
-done
+case "$1" in
+    --install)
+        install_core
+        ;;
+    --wineasio)
+        setup_wineasio
+        ;;
+    --add)
+        shift
+        [[ -z "${1:-}" ]] && error_exit "Please provide a path to add."
+        "$YCTL" add "$1"
+        "$YCTL" sync
+        ;;
+    --remove)
+        shift
+        [[ -z "${1:-}" ]] && error_exit "Please provide a path to remove."
+        "$YCTL" rm "$1"
+        "$YCTL" sync
+        ;;
+    --list)
+        "$YCTL" list
+        ;;
+    --sync)
+        "$YCTL" sync
+        ;;
+    --help|-h)
+        show_help
+        ;;
+    *)
+        error_exit "Unknown option: $1. Use --help for usage."
+        ;;
+esac
