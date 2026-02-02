@@ -82,7 +82,7 @@ setup_wineasio() {
         log_msg "Regular: Registering system-wide WineASIO..."
         local sys_dll64="/usr/lib/wine/x86_64-unix/wineasio64.dll.so"
         if [[ -f "$sys_dll64" ]]; then
-            cp -v "$sys_dll64" "$prefix/drive_c/windows/system32/"
+            cp -v "$sys_dll64" "$prefix/drive_c/windows/system32/wineasio64.dll"
             wine regsvr32 wineasio64.dll
         else
             error_exit "System WineASIO DLL not found. Please install the wineasio package."
