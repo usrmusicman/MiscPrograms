@@ -10,7 +10,7 @@ Add these to your bootloader (GRUB/systemd-boot). These parameters harden the ke
 | Parameter | Purpose |
 | -- | -- |
 | processor.max_cstate=1 | Disables deep CPU sleep states. This ensures the CPU is always "awake" and ready to process a buffer in under 1ms. |
-| preempt=full: | Forces the kernel to be fully preemptible. This allows high-priority audio tasks to "cut in line" ahead of almost any other kernel process. |
+| preempt=full | Forces the kernel to be fully preemptible. This allows high-priority audio tasks to "cut in line" ahead of almost any other kernel process. |
 | skew_tick=1 | Offsets the system "tick" on different CPUs to prevent them from all firing at once, which can cause micro-jitter in high-load audio sessions. |
 | transparent_hugepage=never | Prevents the kernel from trying to group memory into "Huge Pages." While good for databases, the background "defragging" of these pages causes unpredictable CPU spikes (Xruns) in DAWs. |
 | threadirqs | Essential for rtirq. It turns hardware interrupts into manageable threads. |
