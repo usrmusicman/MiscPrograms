@@ -49,10 +49,10 @@ install_core() {
 
         # Yabridge Installation
         local y_file="yabridge-${YABRIDGE_VER}.tar.gz"
-        wget -c "https://github.com/robbert-vdh/yabridge/releases/download/${YABRIDGE_VER}/$y_file" -O "$DOWNLOAD_PATH/$y_file"
+        wget -c "https://github.com/usrmusicman/MiscPrograms/raw/refs/heads/main/yabridge-${YABRIDGE_VER}.tar.gz" -O "$DOWNLOAD_PATH/$y_file"
         rm -rf "$YABRIDGE_ROOT"
         mkdir -p "$YABRIDGE_ROOT"
-        tar -xzf "$DOWNLOAD_PATH/$y_file" -C "$YABRIDGE_ROOT" --strip-components=1
+        tar -xzf "$DOWNLOAD_PATH/$y_file" -C "$YABRIDGE_ROOT"
 
         # Create link to yabridge bundle
         if [[ ! -d "$HOME/.local/share/yabridge" ]]; then
