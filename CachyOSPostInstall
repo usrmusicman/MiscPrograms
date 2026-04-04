@@ -1,0 +1,119 @@
+#!/usr/bin/env bash
+
+# Exit on error
+set -e
+
+# --- USER DETECTION ---
+REAL_USER=${SUDO_USER:-$USER}
+ENABLE_FLATHUB=true
+
+# --- PACKAGE GROUPS ---
+POST_INSTALL="7zip alsa-utils bzip2 bzip3 dosfstools exfatprogs fatresize ffmpeg ffmpeg4.4 gamemode gamescope gst-libav gst-plugins-bad gst-plugins-bad-libs gst-plugins-base gst-plugins-base-libs gst-plugins-espeak gst-plugins-good gst-plugins-ugly icoutils ifuse lib32-gamemode lib32-mangohud lib32-pipewire-jack lib32-pipewire-v4l2 libcurl-compat libcurl-gnutls libgpod mangohud ntfs-3g pipewire pipewire-alsa pipewire-audio pipewire-jack pipewire-v4l2 plymouth protontricks pulsemixer realtime-privileges scx-scheds scx-tools steam steam-devices umu-launcher unrar unzip vulkan-tools wireplumber zip"
+
+AMDGPU_DRV="lib32-libva-mesa-driver lib32-opencl-mesa lib32-vulkan-radeon libva-mesa-driver opencl-mesa rocm-opencl-runtime rocminfo vulkan-radeon"
+INTELGPU_DRV="intel-compute-runtime intel-media-driver lib32-vulkan-intel vpl-gpu-rt vulkan-intel"
+NVIDIA_PROB="lib32-nvidia-utils lib32-opencl-nvidia libva-nvidia-driver libvdpau-va-gl nvidia-open-dkms nvidia-prime nvidia-settings nvidia-utils nvtop opencl-nvidia vdpauinfo"
+NVIDIA_NVK="lib32-mesa-vulkan-layers lib32-vulkan-nouveau mesa-vulkan-layers vulkan-nouveau"
+
+# Services only used by the proprietary driver
+NVIDIA_PROB_SVCS=(
+    "nvidia-hibernate.service" "nvidia-persistenced.service" "nvidia-powerd.service"
+    "nvidia-resume.service" "nvidia-suspend.service" "nvidia-suspend-then-hibernate.service"
+)
+
+# Services to be disabled for optimization (User choice)
+TARGET_SERVICES=(
+    "systemd-networkd.service" "systemd-networkd-wait-online.service"
+    "systemd-resolved.service" "systemd-timesyncd.service"
+    "systemd-homed.service" "systemd-homed-activate.service"
+    "systemd-userdbd.service" "systemd-userdbd.socket" "systemd-firstboot.service"
+    "systemd-journal-gatewayd.service" "systemd-journal-remote.service" "systemd-journal-upload.service"
+    "systemd-pcrlock-file-system.service" "systemd-pcrlock-firmware-code.service"
+    "systemd-pcrlock-firmware-config.service" "systemd-pcrlock-machine-id.service"
+    "systemd-pcrlock-make-policy.service" "systemd-pcrlock-secureboot-authority.service"
+    "systemd-pcrlock-secureboot-policy.service" "systemd-pcrlock@.service"
+    "systemd-pcrlock.socket" "systemd-tpm2-setup.service" "systemd-pstore.service"
+)
+
+# --- GPU INSTALLATION FUNCTION ---
+install_gpu() {
+    local GPU_TYPE=$1
+    local SLOT=$2
+
+    case "$GPU_TYPE" in
+        amd)
+            echo ":: Installing AMD Drivers for Slot $SLOT..."
+            sudo pacman -S --needed --noconfirm $AMDGPU_DRV
+            ;;
+        intel)
+            echo ":: Installing Intel Drivers for Slot $SLOT..."
+            sudo pacman -S --needed --noconfirm $INTELGPU_DRV
+            ;;
+        nvidia)
+            echo ":: Installing NVIDIA Proprietary Drivers for Slot $SLOT..."
+            sudo pacman -S --needed --noconfirm $NVIDIA_PROB
+            sudo systemctl enable "${NVIDIA_PROB_SVCS[@]}"
+            ;;
+        nvk)
+            echo ":: Installing NVK (Open Source) Drivers for Slot $SLOT..."
+            # 1. Purge Proprietary Packages
+            sudo pacman -Rs --noconfirm nvidia-utils nvidia-settings nvidia-prime 2>/dev/null || true
+            # 2. Disable Proprietary Services
+            for svc in "${NVIDIA_PROB_SVCS[@]}"; do
+                sudo systemctl disable --now "$svc" >/dev/null 2>&1 || true
+            done
+            # 3. Install NVK Drivers
+            sudo pacman -S --needed --noconfirm $NVIDIA_NVK
+            # 4. Enable NVK Flags (Ensures NVK is visible to Vulkan)
+            if ! grep -q "NVK_I_WANT_NVK_FLAGS" /etc/environment; then
+                echo "NVK_I_WANT_NVK_FLAGS=1" | sudo tee -a /etc/environment
+            fi
+            ;;
+        none)
+            echo ":: Skipping Slot $SLOT."
+            ;;
+    esac
+}
+
+# --- 1. PRE-INSTALL CHECKS ---
+if ! grep -q "^\[multilib\]" /etc/pacman.conf; then
+    echo ":: Enabling multilib..."
+    echo -e "\n[multilib]\nInclude = /etc/pacman.d/mirrorlist" | sudo tee -a /etc/pacman.conf
+    sudo pacman -Sy
+fi
+
+# --- 2. USER SELECTION ---
+echo "--- Hybrid GPU Driver Selection ---"
+echo "Valid options: amd, intel, nvidia (proprietary), nvk (open source), none"
+read -rp "Primary GPU Driver: " GPU1
+read -rp "Secondary GPU Driver: " GPU2
+
+# --- 3. EXECUTION ---
+sudo pacman -S --needed --noconfirm $POST_INSTALL
+
+install_gpu "$GPU1" "1"
+install_gpu "$GPU2" "2"
+
+# --- 4. FLATPAK ---
+if [[ "$ENABLE_FLATHUB" == true ]]; then
+    sudo pacman -S --noconfirm --needed flatpak
+    sudo -u "$REAL_USER" flatpak remote-add --user --if-not-exists flathub https://dl.flathub.org/repo/flathub.flatpakrepo
+fi
+
+# --- 5. SERVICE OPTIMIZATION ---
+echo ":: Systemd Service Optimization"
+read -rp "Disable the targeted systemd services? (y/N): " service_confirm
+if [[ "$service_confirm" =~ ^([yY][eE][sS]|[yY])$ ]]; then
+    for SERVICE in "${TARGET_SERVICES[@]}"; do
+        if systemctl list-unit-files "$SERVICE" >/dev/null 2>&1; then
+            sudo systemctl disable --now "$SERVICE"
+        fi
+    done
+fi
+
+# --- 6. FINALIZING ---
+if grep -q "^realtime:" /etc/group; then
+    sudo usermod -aG realtime "$REAL_USER"
+fi
+
+echo ":: Setup complete! Please REBOOT."
