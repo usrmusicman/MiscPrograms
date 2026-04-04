@@ -8,7 +8,7 @@ REAL_USER=${SUDO_USER:-$USER}
 ENABLE_FLATHUB=true
 
 # --- PACKAGE GROUPS ---
-POST_INSTALL="7zip alsa-utils bzip2 bzip3 dosfstools exfatprogs fatresize ffmpeg ffmpeg4.4 gamemode gamescope gst-libav gst-plugins-bad gst-plugins-bad-libs gst-plugins-base gst-plugins-base-libs gst-plugins-espeak gst-plugins-good gst-plugins-ugly icoutils ifuse lib32-gamemode lib32-mangohud lib32-pipewire-jack lib32-pipewire-v4l2 libcurl-compat libcurl-gnutls libgpod mangohud ntfs-3g pipewire pipewire-alsa pipewire-audio pipewire-jack pipewire-v4l2 plymouth protontricks pulsemixer realtime-privileges scx-scheds scx-tools steam steam-devices umu-launcher unrar unzip vulkan-tools wireplumber zip"
+POST_INSTALL="7zip alsa-utils bzip2 bzip3 discover dosfstools exfatprogs fatresize flatpak ffmpeg ffmpeg4.4 gamemode gamescope gst-libav gst-plugins-bad gst-plugins-bad-libs gst-plugins-base gst-plugins-base-libs gst-plugins-espeak gst-plugins-good gst-plugins-ugly icoutils ifuse ksshaskpass lib32-gamemode lib32-mangohud lib32-pipewire-jack lib32-pipewire-v4l2 libcurl-compat libcurl-gnutls libgpod mangohud ntfs-3g pipewire pipewire-alsa pipewire-audio pipewire-jack pipewire-v4l2 plymouth protontricks pulsemixer realtime-privileges scx-scheds scx-tools steam steam-devices umu-launcher unrar unzip vulkan-tools wireplumber zip"
 
 AMDGPU_DRV="lib32-libva-mesa-driver lib32-opencl-mesa lib32-vulkan-radeon libva-mesa-driver opencl-mesa rocm-opencl-runtime rocminfo vulkan-radeon"
 INTELGPU_DRV="intel-compute-runtime intel-media-driver lib32-vulkan-intel vpl-gpu-rt vulkan-intel"
