@@ -1,0 +1,610 @@
+#!/bin/env bash
+
+# Define the config file path
+CONFIG_FILE="Archlinux_Setup.conf"
+
+# Check if the config file exists
+if [[ -f "$CONFIG_FILE" ]]; then
+    echo "Loading configuration from $CONFIG_FILE..."
+    source "./$CONFIG_FILE"
+else
+    echo "Error: Configuration file '$CONFIG_FILE' not found!"
+    echo "Please create it or ensure it's in the same directory."
+    exit 1
+fi
+
+# Validation: Ensure critical variables aren't empty
+: "${INSTALL_DISK:?Variable not set}"
+: "${BOOT_PARTITION:?Variable not set}"
+: "${ROOT_PARTITION:?Variable not set}"
+: "${USERNAME:?Variable not set}"
+
+# GPU Drivers
+AMDGPU_DRV="lib32-libva-mesa-driver lib32-opencl-mesa lib32-vulkan-radeon libva-mesa-driver opencl-mesa rocm-opencl-runtime rocminfo vulkan-radeon"
+INTELGPU_DRV="intel-compute-runtime intel-media-driver lib32-vulkan-intel vpl-gpu-rt vulkan-intel"
+NVIDIA_PRO_DRV="lib32-nvidia-utils lib32-opencl-nvidia libva-nvidia-driver libvdpau-va-gl nvidia-open-dkms nvidia-prime nvidia-settings nvidia-container-toolkit nvidia-utils nvtop opencl-nvidia vdpauinfo"
+NVIDIA_NVK="lib32-mesa-vulkan-layers lib32-vulkan-nouveau mesa-vulkan-layers vulkan-nouveau"
+
+# Base Package List
+PACKAGES="7zip ark bash-completion bluez bluez-cups bluez-hid2hci bluez-libs bluez-obex bluez-utils breeze5 cups cups-browsed dolphin dolphin-plugins exfatprogs ffmpeg ffmpeg4.4 ffmpegthumbs firefox firefox-i18n-en-us flatpak fwupd gamemode gamescope gst-libav gst-plugin-pipewire gst-plugins-bad gst-plugins-bad-libs gst-plugins-base gst-plugins-base-libs gst-plugins-espeak gst-plugins-good gst-plugins-ugly gwenview icoutils ifuse iproute2 irqbalance kaccounts-integration kate kcalc kdeconnect kdegraphics-mobipocket kdegraphics-thumbnailers kdialog keditbookmarks kio-admin kio-extras kio-fuse konsole ksshaskpass lib32-gamemode lib32-libcurl-compat lib32-libcurl-gnutls lib32-mangohud lib32-pipewire-jack lib32-pipewire-v4l2 libcurl-compat libcurl-gnutls libdvdcss libnvidia-container libgpod lsb-release mangohud multilib-devel networkmanager networkmanager-vpn-plugin-openvpn noto-fonts noto-fonts-cjk noto-fonts-emoji nss-mdns ntfs-3g orca partitionmanager phonon-qt6-vlc pipewire-audio pipewire-jack pipewire-v4l2 print-manager plasma-meta plymouth plymouth-kcm power-profiles-daemon pulsemixer realtime-privileges reflector steam steam-devices system-config-printer umu-launcher unrar unzip vi vim vlc vulkan-tools zip zram-generator"
+
+add_user() {
+    echo "Add User..."
+
+    # Add the user first
+    arch-chroot "$CHROOT_DIR" useradd -m -G wheel -s /bin/bash "$USERNAME"
+
+    # Create the specific gaming directories
+    local USER_HOME="$CHROOT_DIR/home/$USERNAME"
+    mkdir -p "$USER_HOME/.local/share/Steam"
+    mkdir -p "$USER_HOME/.wine"
+    mkdir -p "$USER_HOME/Games"
+
+    # Enable casefold (+F) on the EMPTY directories
+    # Note: Directories MUST be empty for this attribute to be set
+    chattr +F "$USER_HOME/.local/share/Steam"
+    chattr +F "$USER_HOME/.wine"
+    chattr +F "$USER_HOME/Games"
+
+    # Set password
+    echo "$USERNAME:$PASSWORD" | arch-chroot "$CHROOT_DIR" chpasswd
+
+    # Enable sudo
+    echo '%wheel ALL=(ALL:ALL) ALL' > "$CHROOT_DIR/etc/sudoers.d/wheel"
+    chmod 440 "$CHROOT_DIR/etc/sudoers.d/wheel"
+
+    # Unsset Password
+    unset PASSWORD
+
+    # Ensure the user actually owns their home folder after we made root-owned subdirs
+    arch-chroot "$CHROOT_DIR" chown -R "$USERNAME:$USERNAME" "/home/$USERNAME"
+}
+
+configure_avahi() {
+    echo "Configuring Avahi mDNS..."
+
+    # Configure NSS Switch to use mdns_minimal
+    # This allows .local resolution
+    sed -i 's/hosts: mymachines/hosts: mymachines mdns_minimal [NOTFOUND=return]/' "$CHROOT_DIR"/etc/nsswitch.conf
+}
+
+configure_hostname() {
+    echo "Configure Compter Name..."
+
+    echo "$HOSTNAME" > "$CHROOT_DIR"/etc/hostname
+}
+
+configure_io_schedulers() {
+    echo "Applying I/O Scheduler Udev Rules..."
+
+    cat <<EOF > "$CHROOT_DIR/etc/udev/rules.d/60-ioschedulers.rules"
+# Set BFQ for rotational drives (HDDs)
+ACTION=="add|change", KERNEL=="sd[a-z]*|mmcblk[0-9]*", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"
+
+# Set 'none' for non-rotational NVMe drives
+ACTION=="add|change", KERNEL=="nvme[0-9]*n[0-9]*", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="none"
+
+# Set 'none' for non-rotational SATA SSDs
+ACTION=="add|change", KERNEL=="sd[a-z]*", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="none"
+EOF
+}
+
+configure_keyboard() {
+    echo "Setting keyboard layout to: $KEYMAP"
+
+    # 1. Set the layout for the CURRENT live session immediately
+    loadkeys "$KEYMAP"
+
+    # 2. Write to /etc/vconsole.conf for the installed system
+    # This affects the TTY terminals
+    echo "KEYMAP=$KEYMAP" > "$CHROOT_DIR/etc/vconsole.conf"
+
+    # 3. Optional: Set a matching X11 layout for the GUI
+    # While Plasma manages this itself, setting a system-wide default
+    # prevents the login screen (SDDM) from defaulting to 'us'.
+    local X11_LAYOUT
+    case "$KEYMAP" in
+        uk) X11_LAYOUT="gb" ;;
+        ca-fr) X11_LAYOUT="ca" ;;
+        *) X11_LAYOUT="$KEYMAP" ;;
+    esac
+
+    mkdir -p $CHROOT_DIR/etc/X11/xorg.conf.d/
+    cat <<EOF > "$CHROOT_DIR/etc/X11/xorg.conf.d/00-keyboard.conf"
+Section "InputClass"
+        Identifier "system-keyboard"
+        MatchIsKeyboard "on"
+        Option "XkbLayout" "$X11_LAYOUT"
+EndSection
+EOF
+}
+
+configure_locale() {
+    echo "Configure System Locale..."
+
+    # Set fallback if input is empty
+    if [[ -z "$USER_LOCALE" ]]; then
+        USER_LOCALE="en_US.UTF-8"
+    fi
+
+    echo "Setting system locale to: $USER_LOCALE"
+
+    # 1. Uncomment the chosen locale in locale.gen
+    # We use escaped variables to ensure sed finds the exact line
+    if grep -q "^#$USER_LOCALE" "$CHROOT_DIR/etc/locale.gen"; then
+        sed -i "/^#$USER_LOCALE/s/^#//" "$CHROOT_DIR/etc/locale.gen"
+    else
+        echo "!! Warning: $USER_LOCALE not found in locale.gen. Falling back to en_US.UTF-8."
+        USER_LOCALE="en_US.UTF-8"
+        sed -i "/^#en_US.UTF-8 UTF-8/s/^#//" "$CHROOT_DIR/etc/locale.gen"
+    fi
+
+    # 2. Always ensure en_US.UTF-8 is generated as a secondary fallback for software compatibility
+    if [[ "$USER_LOCALE" != "en_US.UTF-8" ]]; then
+        sed -i "/^#en_US.UTF-8 UTF-8/s/^#//" "$CHROOT_DIR/etc/locale.gen"
+    fi
+
+    # 3. Generate and write config
+    arch-chroot "$CHROOT_DIR" locale-gen
+    echo "LANG=$USER_LOCALE" > "$CHROOT_DIR/etc/locale.conf"
+
+    echo "Locale set successfully."
+}
+
+configure_mirrors() {
+    echo "Optimizing mirrorlist for $MIRROR_COUNTRY..."
+
+    # Ensure reflector is available on the live ISO
+    if ! command -v reflector &> /dev/null; then
+        pacman -Sy --noconfirm reflector
+    fi
+
+    # Run reflector using the country variable
+    # --country: Filters by the code you entered
+    # --protocol https: For security
+    # --latest 20: Looks at the 20 most recently synced
+    # --sort rate: Picks the fastest among them
+    reflector --country "$MIRROR_COUNTRY" --age 12 --protocol https --latest 20 --number 5 --sort rate --save /etc/pacman.d/mirrorlist
+}
+
+configure_mkinitcpio() {
+    echo "Creating mkinitcpio drop-in configurations..."
+
+    mkdir -p "$CHROOT_DIR/etc/mkinitcpio.conf.d"
+
+    # 1. Performance & Filesystem Modules
+    # ntsync for Wine, ext4 for your root, and nls for character encoding
+    cat <<EOF > "$CHROOT_DIR/etc/mkinitcpio.conf.d/performance.conf"
+MODULES+=(ntsync ext4 nls_ascii nls_utf8)
+EOF
+
+    # 2. Nvidia Early KMS Modules
+    # This ONLY creates the file if nvidia or nvidia_foss is detected in your config
+    if [[ "$GPU0" =~ ^nvidia || "$GPU1" =~ ^nvidia ]]; then
+        echo "Nvidia detected ($GPU0/$GPU1). Adding Early KMS modules..."
+        cat <<EOF > "$CHROOT_DIR/etc/mkinitcpio.conf.d/nvidia.conf"
+# Ensure the GPU initializes before the display manager starts
+MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)
+EOF
+    else
+        echo "No Nvidia GPU detected. Skipping nvidia.conf..."
+    fi
+}
+
+configure_mkinitcpio_uki_preset() {
+    echo "Setting up mkinitcpio UKI preset..."
+
+    local PRESET_FILE="$CHROOT_DIR/etc/mkinitcpio.d/linux-zen.preset"
+    local EFI_DIR="/$BOOTLOADER_PATH/EFI/Linux"
+
+    mkdir -p "${CHROOT_DIR}${EFI_DIR}"
+
+    cat <<EOF > "$PRESET_FILE"
+# mkinitcpio preset for linux-zen to generate UKI only
+ALL_config="/etc/mkinitcpio.conf"
+ALL_kver="/boot/vmlinuz-linux-zen"
+
+PRESETS=('default')
+
+# We disable the standard .img generation to save space/time
+# default_image="/boot/initramfs-linux-zen.img"
+
+# Generate the UKI (.efi) directly
+default_uki="$EFI_DIR/arch-zen.efi"
+default_options="--cmdline /etc/kernel/cmdline"
+EOF
+}
+
+configure_ntp() {
+    echo "Enabling Network Time Synchronization (NTP)..."
+
+    # Enable systemd-timesyncd
+    # This is much lighter than chrony or ntpd for a gaming/workstation build
+    arch-chroot "$CHROOT_DIR" systemctl enable systemd-timesyncd.service
+}
+
+configure_ntsync() {
+    echo "Configuring ntsync for high-performance Wine synchronization..."
+
+    # 1. Create the module load file to ensure it starts at boot
+    echo "ntsync" > "$CHROOT_DIR/etc/modules-load.d/ntsync.conf"
+
+    # 2. Create a udev rule to allow the user to access /dev/ntsync
+    # This is critical so Wine can actually use the driver without root
+    cat <<EOF > "$CHROOT_DIR/etc/udev/rules.d/99-ntsync.rules"
+KERNEL=="ntsync", MODE="0666"
+EOF
+}
+
+configure_pacman_makepkg() {
+    echo "Tuning Pacman and Makepkg configurations..."
+
+    # 1. Enable Multilib in pacman.conf
+    # This finds the [multilib] section header and the following Include line and uncomments them
+    sed -i '/#\[multilib\]/,/#Include = \/etc\/pacman.d\/mirrorlist/ s/^#//' "$CHROOT_DIR/etc/pacman.conf"
+    sed -i 's/^#ParallelDownloads = 5/ParallelDownloads = 10/' "$CHROOT_DIR/etc/pacman.conf"
+
+    # 2. Disable Debugging in makepkg.conf
+    # This finds the OPTIONS array and replaces 'debug' with '!debug'
+    # It also ensures 'strip' is present to keep binary sizes down
+    sed -i "s/OPTIONS=(/OPTIONS=(!debug /" "$CHROOT_DIR/etc/makepkg.conf"
+
+    # Optional: Enable parallel compilation based on CPU cores (good for AUR builds)
+    local CORES=$(nproc)
+    sed -i "s/#MAKEFLAGS=\"-j2\"/MAKEFLAGS=\"-j$CORES\"/" "$CHROOT_DIR/etc/makepkg.conf"
+    sed -i 's/COMPRESSZST=(zstd -c -z -q -)/COMPRESSZST=(zstd -c -z -q --threads=0 -)/' "$CHROOT_DIR/etc/makepkg.conf"
+}
+
+configure_secure_boot() {
+    echo "Initializing Secure Boot keys and signing UKI..."
+
+    # 1. Create the keys
+    arch-chroot "$CHROOT_DIR" sbctl create-keys
+
+    # 2. Enroll keys. The --microsoft flag is vital for keeping
+    # compatibility with firmware/hardware signed by MS.
+    if arch-chroot "$CHROOT_DIR" sbctl enroll-keys --microsoft; then
+        echo "Keys enrolled successfully."
+    else
+        echo "!! Warning: Enrollment failed. You must set BIOS to 'Setup Mode' (Clear Keys) to enroll."
+    fi
+
+    # 3. Sign the UKI and save to the database for automatic re-signing
+    local UKI_PATH="/$BOOTLOADER_PATH/EFI/Linux/arch-zen.efi"
+    if [[ -f "${CHROOT_DIR}${UKI_PATH}" ]]; then
+        echo "Signing $UKI_PATH..."
+        arch-chroot "$CHROOT_DIR" sbctl sign -s "$UKI_PATH"
+    else
+        echo "Error: UKI not found at $UKI_PATH. Signing skipped."
+    fi
+}
+
+configure_timezone() {
+    echo "Configure Timezone..."
+
+    # Use fallback if global variable is empty
+    local FINAL_ZONE=${TIMEZONE:-"UTC"}
+
+    if [ -f "$CHROOT_DIR/usr/share/zoneinfo/$FINAL_ZONE" ]; then
+        echo "Setting timezone to: $FINAL_ZONE"
+        # Create the symlink for the timezone
+        arch-chroot "$CHROOT_DIR" ln -sf "/usr/share/zoneinfo/$FINAL_ZONE" /etc/localtime
+
+        # Update the hardware clock
+        arch-chroot "$CHROOT_DIR" hwclock --systohc
+    else
+        echo "!! Error: Timezone $FINAL_ZONE not found. Defaulting to UTC."
+        arch-chroot "$CHROOT_DIR" ln -sf /usr/share/zoneinfo/UTC /etc/localtime
+    fi
+}
+
+configure_uinput() {
+    echo "Configuring uinput for virtual controllers..."
+
+    # 1. Alias for modprobe
+    echo "alias char-major-10-223 uinput" > "$CHROOT_DIR/etc/modprobe.d/uinput.conf"
+
+    # 2. Force load at boot
+    echo "uinput" > "$CHROOT_DIR/etc/modules-load.d/uinput.conf"
+
+    # 3. Udev rule to allow the 'input' group to use it (Crucial for Steam/Controllers)
+    cat <<EOF > "$CHROOT_DIR/etc/udev/rules.d/99-uinput.rules"
+KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"
+EOF
+}
+
+configure_user_groups() {
+    echo "Configuring User Group Permissions..."
+
+    # audio/video: Hardware acceleration & interfaces
+    # games/input: Controllers, high-poll mice, and drawing tablets
+    # realtime: Low-latency scheduling for the Zen kernel
+    # flatpak: Sandboxed app management
+    # cups: Local printer administration
+    local USER_GROUPS="audio,video,games,realtime,flatpak,cups,input,render"
+
+    echo "Adding $USERNAME to: $USER_GROUPS"
+
+    # Append groups to the user (ensuring 'wheel' and others remain)
+    arch-chroot "$CHROOT_DIR" usermod -aG "$USER_GROUPS" "$USERNAME"
+}
+
+create_partitions() {
+    echo "Formatting Partitions..."
+
+    # Format Boot (FAT32 for EFI)
+    # -I ignores the 'is already a filesystem' prompt if it was previously formatted
+    mkfs.vfat -F32 -I "$BOOT_PARTITION"
+
+    # Format Root (EXT4 with Casefold)
+    # Adding -F to force format without interaction
+    mkfs.ext4 -F -b 4096 -E lazy_itable_init=1 -O casefold -m 1 "$ROOT_PARTITION"
+    e2label "$ROOT_PARTITION" "Archlinux"
+}
+
+disable_services() {
+    echo "Masking unneeded services (The Nuclear Option)..."
+    # We use mask instead of disable to prevent these from being
+    # started as dependencies by other packages.
+    local SERVICES=(
+        "systemd-networkd.service"
+        "systemd-networkd.socket"
+        "systemd-homed.service"
+        "systemd-userdbd.socket"
+        "systemd-journal-remote.service"
+        "systemd-journal-upload.service"
+        "systemd-journal-gatewayd.service"
+        "systemd-pcrlock.service"
+    )
+
+    for svc in "${SERVICES[@]}"; do
+        arch-chroot "$CHROOT_DIR" systemctl mask "$svc" >/dev/null 2>&1 || true
+    done
+}
+
+enable_services() {
+    echo "Enabling System Services..."
+    # Desktop & Network
+    # Using plasmalogin.service as per latest Arch/Plasma Wayland standards
+    arch-chroot "$CHROOT_DIR" systemctl enable plasmalogin.service
+    arch-chroot "$CHROOT_DIR" systemctl enable NetworkManager.service
+    arch-chroot "$CHROOT_DIR" systemctl enable bluetooth.service
+
+    # Printing & Discovery
+    arch-chroot "$CHROOT_DIR" systemctl enable avahi-daemon.service
+    arch-chroot "$CHROOT_DIR" systemctl enable cups.service
+    arch-chroot "$CHROOT_DIR" systemctl enable cups-browsed.service
+
+    # Performance & Audio
+    arch-chroot "$CHROOT_DIR" systemctl enable irqbalance.service
+}
+
+finalize_uki() {
+    echo "Generating Unified Kernel Image (UKI) via mkinitcpio..."
+
+    # Remove the default images if they were created during pacstrap
+    rm -f "$CHROOT_DIR"/boot/initramfs-linux-zen.img
+    rm -f "$CHROOT_DIR"/boot/initramfs-linux-zen-fallback.img
+
+    # Build only what is in our new preset (the UKI)
+    arch-chroot "$CHROOT_DIR" mkinitcpio -p linux-zen
+}
+
+install_archlinux() {
+    echo "Install Archlinux..."
+    # Added 'dkms' to ensure nvidia-open-dkms can build and be signed
+    pacstrap "$CHROOT_DIR" binutils base base-devel dosfstools mkinitcpio systemd-ukify e2fsprogs efibootmgr linux-firmware linux-zen linux-zen-headers sbctl sbsigntools dkms
+
+    cp /etc/pacman.d/mirrorlist "$CHROOT_DIR"/etc/pacman.d/mirrorlist
+    arch-chroot "$CHROOT_DIR" pacman-key --init
+    arch-chroot "$CHROOT_DIR" pacman-key --populate archlinux
+}
+
+install_base_pkgs() {
+    echo "Install Base Packages..."
+
+    # Install System Packages
+    arch-chroot "$CHROOT_DIR" pacman -S --noconfirm $PACKAGES
+}
+
+install_chaotic_aur() {
+    if [[ "$USE_CHAOTIC" =~ ^[Yy]$ ]]; then
+        echo "Installing Chaotic-AUR..."
+
+        # 1. Receive the primary key
+        CHAOTIC_KEYRING="3056513887B78AEB"
+        arch-chroot "$CHROOT_DIR" pacman-key --recv-key $CHAOTIC_KEYRING --keyserver keyserver.ubuntu.com
+        arch-chroot "$CHROOT_DIR" pacman-key --lsign-key $CHAOTIC_KEYRING
+
+        # 2. Install the keyring and mirrorlist
+        arch-chroot "$CHROOT_DIR" pacman -U --noconfirm 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-keyring.pkg.tar.zst'
+        arch-chroot "$CHROOT_DIR" pacman -U --noconfirm 'https://cdn-mirror.chaotic.cx/chaotic-aur/chaotic-mirrorlist.pkg.tar.zst'
+
+        # 3. Add to pacman.conf
+        {
+            echo ""
+            echo "[chaotic-aur]"
+            echo "Include = /etc/pacman.d/chaotic-mirrorlist"
+        } >> "$CHROOT_DIR/etc/pacman.conf"
+
+        # Intialize Chaotic Keyring
+        pacman-key --populate chaotic
+
+        # Refresh database
+        arch-chroot "$CHROOT_DIR" pacman -Sy --noconfirm
+    fi
+}
+
+install_cpu_firmware() {
+    echo "Install CPU Firmware..."
+
+    # Install CPU firmware
+    if [[ "$CPU" == "amd" ]]; then
+        arch-chroot "$CHROOT_DIR" pacman -S --noconfirm amd-ucode
+    elif [[ "$CPU" == "intel" ]]; then
+        arch-chroot "$CHROOT_DIR" pacman -S --noconfirm intel-ucode
+    else
+        echo "No CPU Detected"
+    fi
+}
+
+install_gpu_driver() {
+    echo "GPUO=$GPU0"
+    echo "GPU1=$GPU1"
+    echo "NVIDIA_PRO_DRV=$NVIDIA_PRO_DRV"
+
+    arch-chroot "$CHROOT_DIR" pacman -Sy
+
+    case "$GPU0" in
+        amd) arch-chroot "$CHROOT_DIR" pacman -S --noconfirm $AMDGPU_DRV ;;
+        intel) arch-chroot "$CHROOT_DIR" pacman -S --noconfirm $INTELGPU_DRV ;;
+        nvidia) arch-chroot "$CHROOT_DIR" pacman -S --noconfirm $NVIDIA_PRO_DRV ;;
+        nvidia_foss) arch-chroot "$CHROOT_DIR" pacman -S --noconfirm $NVIDIA_NVK ;;
+        *) echo "No primary GPU detected" ;;
+    esac
+
+    case "$GPU1" in
+        amd) arch-chroot "$CHROOT_DIR" pacman -S --noconfirm $AMDGPU_DRV ;;
+        intel) arch-chroot "$CHROOT_DIR" pacman -S --noconfirm $INTELGPU_DRV ;;
+        nvidia) arch-chroot "$CHROOT_DIR" pacman -S --noconfirm $NVIDIA_PRO_DRV ;;
+        nvidia_foss) arch-chroot "$CHROOT_DIR" pacman -S --noconfirm $NVIDIA_NVK ;;
+        *) echo "No secondary GPU detected" ;;
+    esac
+}
+
+generate_fstab() {
+    echo "Install FSTAB..."
+
+    # Generate FSTAB
+    genfstab -U "$CHROOT_DIR" > "$CHROOT_DIR"/etc/fstab
+}
+
+mount_partitions() {
+    echo "Mount Partitions..."
+
+    # Ensure the directory exists first
+    mkdir -p "$CHROOT_DIR"
+
+    # Mount Root
+    mount -t ext4 -o noatime,commit=10,lazytime "$ROOT_PARTITION" "$CHROOT_DIR"
+
+    # Mount Boot
+    mkdir -p "$CHROOT_DIR/$BOOTLOADER_PATH"
+    mount "$BOOT_PARTITION" "$CHROOT_DIR/$BOOTLOADER_PATH"
+}
+
+partition_disk() {
+    echo "Verifying partitions..."
+
+    # Check if the physical disk exists
+    if [[ ! -b "$INSTALL_DISK" ]]; then
+        echo "Error: Device $INSTALL_DISK not found!"
+        exit 1
+    fi
+
+    # Check if the partitions exist
+    if [[ ! -b "$BOOT_PARTITION" ]] || [[ ! -b "$ROOT_PARTITION" ]]; then
+        echo "Error: Partitions not found. Please partition the disk manually first."
+        echo "Required: $BOOT_PARTITION and $ROOT_PARTITION"
+        exit 1
+    fi
+
+    echo "Partitions verified. Proceeding to formatting..."
+}
+
+register_efistub() {
+    echo "Registering UKI with UEFI Boot Manager..."
+
+    # 1. Clean up old entries to avoid BIOS clutter
+    # This finds the hex ID (e.g., 0001) for any entry labeled "Arch Linux Zen"
+    local OLD_ENTRY=$(arch-chroot "$CHROOT_DIR" efibootmgr | grep "Arch Linux Zen" | getconf ARG_MAX=1 | awk '{print $1}' | sed 's/Boot//;s/\*//')
+
+    if [[ -n "$OLD_ENTRY" ]]; then
+        echo "Removing old UEFI entry $OLD_ENTRY..."
+        arch-chroot "$CHROOT_DIR" efibootmgr -b "$OLD_ENTRY" -B
+    fi
+
+    # 2. Identify the disk and partition
+    local DISK=$(echo "$BOOT_PARTITION" | sed -E 's/p?[0-9]+$//')
+    local PART=$(echo "$BOOT_PARTITION" | grep -oE '[0-9]+$')
+
+    # 3. Create the new entry
+    # Ensure the loader path uses double backslashes for UEFI compliance
+    arch-chroot "$CHROOT_DIR" efibootmgr --create \
+        --disk "$DISK" \
+        --part "$PART" \
+        --label "Arch Linux Zen" \
+        --loader "\\EFI\\Linux\\arch-zen.efi" \
+        --unicode
+}
+
+setup_kernel_cmdline() {
+    echo "Setup Kernel Commandline..."
+
+    # Get the UUID correctly
+    local ROOT_UUID=$(blkid -s UUID -o value "$ROOT_PARTITION")
+
+    # Construct the base options
+    local CMDLINE="root=UUID=$ROOT_UUID rw threadirqs usbcore.autosuspend=-1 zswap.enabled=0 quiet splash"
+
+    # Append Nvidia specific options if needed
+    if [[ "$GPU0" == "nvidia" || "$GPU1" == "nvidia" ]]; then
+        CMDLINE="$CMDLINE nvidia-drm.modeset=1"
+    fi
+
+    # Write to the file dracut expects
+    mkdir -p "$CHROOT_DIR"/etc/kernel
+    echo "$CMDLINE" > "$CHROOT_DIR"/etc/kernel/cmdline
+}
+
+zram_disk() {
+    echo "Setup Zram..."
+
+    # Install Zram Config
+    cat <<EOF > "$CHROOT_DIR"/etc/systemd/zram-generator.conf
+[zram0]
+# Uses half of RAM, but caps it at 8GB (8192MB)
+zram-size = min(ram / 2, 8192)
+compression-algorithm = zstd
+swap-priority = 100
+fs-type = swap
+EOF
+}
+
+if [[ "$USER" == "root" ]]; then
+
+    configure_mirrors
+    partition_disk
+    create_partitions
+    mount_partitions
+    install_archlinux
+    configure_pacman_makepkg
+    install_chaotic_aur
+    generate_fstab
+    zram_disk
+    install_cpu_firmware
+    install_gpu_driver
+    install_base_pkgs
+    setup_kernel_cmdline
+    configure_mkinitcpio
+    configure_mkinitcpio_uki_preset
+    configure_avahi
+    configure_hostname
+    configure_locale
+    configure_keyboard
+    configure_ntsync
+    configure_uinput
+    configure_io_schedulers
+    configure_timezone
+    configure_ntp
+    finalize_uki
+    configure_secure_boot
+    register_efistub
+    add_user
+    configure_user_groups
+    enable_services
+    disable_services
+
+    echo "Installation Complete! You can now reboot into your new Zen system."
+
+fi
