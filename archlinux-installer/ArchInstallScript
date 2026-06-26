@@ -20,10 +20,10 @@ fi
 : "${USERNAME:?Variable not set}"
 
 # GPU Drivers
-AMDGPU_DRV="lib32-libva-mesa-driver lib32-opencl-mesa lib32-vulkan-radeon libva-mesa-driver opencl-mesa rocm-hip-runtime rocm-opencl-runtime rocminfo vulkan-radeon"
-INTELGPU_DRV="intel-compute-runtime intel-media-driver lib32-vulkan-intel vpl-gpu-rt vulkan-intel"
+AMDGPU_DRV="lib32-vulkan-mesa-implicit-layers lib32-vulkan-mesa-layers lib32-opencl-mesa lib32-vulkan-radeon libva-utils opencl-mesa rocm-hip-runtime rocm-opencl-runtime rocminfo vulkan-mesa-implicit-layers vulkan-mesa-layers vulkan-radeon"
+INTELGPU_DRV="intel-compute-runtime intel-media-driver libva-utils lib32-vulkan-mesa-implicit-layers lib32-vulkan-mesa-layers lib32-vulkan-intel vpl-gpu-rt vulkan-intel vulkan-mesa-implicit-layers vulkan-mesa-layers"
 NVIDIA_PRO_DRV="lib32-nvidia-utils lib32-opencl-nvidia libva-nvidia-driver libvdpau-va-gl nvidia-open-dkms nvidia-prime nvidia-settings nvidia-container-toolkit nvidia-utils nvtop opencl-nvidia vdpauinfo"
-NVIDIA_NVK="lib32-mesa-vulkan-layers lib32-vulkan-nouveau mesa-vulkan-layers vulkan-nouveau"
+NVIDIA_NVK="lib32-opencl-mesa lib32-vulkan-mesa-implicit-layers lib32-vulkan-mesa-layers lib32-vulkan-nouveau opencl-mesa vulkan-mesa-implicit-layers vulkan-mesa-layers vulkan-nouveau"
 
 # Base Package List
 PACKAGES="7zip ark bash-completion bluez bluez-cups bluez-hid2hci bluez-libs bluez-obex bluez-utils breeze5 cups cups-browsed dolphin dolphin-plugins exfatprogs ffmpeg ffmpeg4.4 ffmpegthumbs firefox firefox-i18n-en-us flatpak fwupd gamemode gamescope gst-libav gst-plugin-pipewire gst-plugins-bad gst-plugins-bad-libs gst-plugins-base gst-plugins-base-libs gst-plugins-espeak gst-plugins-good gst-plugins-ugly gwenview icoutils ifuse iproute2 irqbalance kaccounts-integration kate kcalc kdeconnect kdegraphics-mobipocket kdegraphics-thumbnailers kdialog keditbookmarks kio-admin kio-extras kio-fuse konsole ksshaskpass less lib32-gamemode lib32-libcurl-compat lib32-libcurl-gnutls lib32-mangohud lib32-pipewire-jack lib32-pipewire-v4l2 libcurl-compat libcurl-gnutls libdvdcss libnvidia-container libgpod lsb-release man-db man-pages man-pages-utils mangohud mpv multilib-devel networkmanager networkmanager-vpn-plugin-openvpn noto-fonts noto-fonts-cjk noto-fonts-emoji nss-mdns ntfs-3g orca partitionmanager phonon-qt6-vlc pipewire-audio pipewire-jack pipewire-v4l2 print-manager plasma-meta plymouth plymouth-kcm power-profiles-daemon pulsemixer realtime-privileges reflector steam steam-devices system-config-printer umu-launcher unrar unzip vi vim vlc vulkan-tools yt-dlp zip zram-generator"
