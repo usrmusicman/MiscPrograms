@@ -20,7 +20,7 @@ fi
 : "${USERNAME:?Variable not set}"
 
 # GPU Drivers
-AMDGPU_DRV="lib32-libva-mesa-driver lib32-opencl-mesa lib32-vulkan-radeon libva-mesa-driver opencl-mesa rocm-opencl-runtime rocminfo vulkan-radeon"
+AMDGPU_DRV="lib32-libva-mesa-driver lib32-opencl-mesa lib32-vulkan-radeon libva-mesa-driver opencl-mesa rocm-hip-runtime rocm-opencl-runtime rocminfo vulkan-radeon"
 INTELGPU_DRV="intel-compute-runtime intel-media-driver lib32-vulkan-intel vpl-gpu-rt vulkan-intel"
 NVIDIA_PRO_DRV="lib32-nvidia-utils lib32-opencl-nvidia libva-nvidia-driver libvdpau-va-gl nvidia-open-dkms nvidia-prime nvidia-settings nvidia-container-toolkit nvidia-utils nvtop opencl-nvidia vdpauinfo"
 NVIDIA_NVK="lib32-mesa-vulkan-layers lib32-vulkan-nouveau mesa-vulkan-layers vulkan-nouveau"
