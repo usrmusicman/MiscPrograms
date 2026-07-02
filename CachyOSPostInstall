@@ -14,16 +14,23 @@ ENABLE_FLATHUB=false
 ENABLE_OPTIMIZE=false
 
 # --- PACKAGE GROUPS ---
-POST_INSTALL="7zip alsa-utils bzip2 bzip3 discover dosfstools exfatprogs fatresize flatpak ffmpeg ffmpeg4.4 gamemode gamescope gst-libav gst-plugins-bad gst-plugins-bad-libs gst-plugins-base gst-plugins-base-libs gst-plugins-espeak gst-plugins-good gst-plugins-ugly icoutils ifuse ksshaskpass lib32-gamemode lib32-mangohud lib32-pipewire-jack lib32-pipewire-v4l2 libcurl-compat libcurl-gnutls libgpod mangohud ntfs-3g pipewire pipewire-alsa pipewire-audio pipewire-jack pipewire-v4l2 plymouth protontricks pulsemixer realtime-privileges scx-scheds scx-tools steam steam-devices umu-launcher unrar unzip vulkan-tools wireplumber zip"
+POST_INSTALL="7zip alsa-utils bzip2 bzip3 cachyos-lavender-kde-theme-git cachyos-sysctl-manager discover dosfstools exfatprogs fatresize flatpak ffmpeg gamemode gamescope gst-libav gst-plugins-bad gst-plugins-bad-libs gst-plugins-base gst-plugins-base-libs gst-plugins-espeak gst-plugins-good gst-plugins-ugly icoutils ifuse ksshaskpass lib32-gamemode lib32-mangohud lib32-pipewire-jack lib32-pipewire-v4l2 libcurl-compat libcurl-gnutls libgpod mangohud ntfs-3g pipewire pipewire-alsa pipewire-audio pipewire-jack pipewire-v4l2 plasma-meta plymouth protontricks pulsemixer realtime-privileges scx-scheds scx-tools steam steam-devices umu-launcher unrar unzip vulkan-tools wireplumber zip"
 
-AMDGPU_DRV="lib32-libva-mesa-driver lib32-opencl-mesa lib32-vulkan-radeon libva-mesa-driver opencl-mesa rocm-opencl-runtime rocminfo vulkan-radeon"
+AMDGPU_DRV="lib32-libva-mesa-driver lib32-opencl-mesa lib32-vulkan-radeon libva-mesa-driver opencl-mesa rocm-hip-runtime rocm-opencl-runtime rocminfo vulkan-radeon"
 INTELGPU_DRV="intel-compute-runtime intel-media-driver lib32-vulkan-intel vpl-gpu-rt vulkan-intel"
 NVIDIA_PROB="lib32-nvidia-utils lib32-opencl-nvidia libva-nvidia-driver libvdpau-va-gl nvidia-open-dkms nvidia-prime nvidia-settings nvidia-utils nvtop opencl-nvidia vdpauinfo"
 NVIDIA_NVK="lib32-mesa-vulkan-layers lib32-vulkan-nouveau mesa-vulkan-layers vulkan-nouveau"
 
 NVIDIA_PROB_SVCS=("nvidia-hibernate.service" "nvidia-persistenced.service" "nvidia-powerd.service" "nvidia-resume.service" "nvidia-suspend.service" "nvidia-suspend-then-hibernate.service")
 
-TARGET_SERVICES=("systemd-networkd.service" "systemd-networkd-wait-online.service" "systemd-resolved.service" "systemd-homed.service" "systemd-homed-activate.service" "systemd-userdbd.service" "systemd-userdbd.socket" "systemd-firstboot.service" "systemd-journal-gatewayd.service" "systemd-journal-remote.service" "systemd-journal-upload.service" "systemd-pcrlock-file-system.service" "systemd-pcrlock-firmware-code.service" "systemd-pcrlock-firmware-config.service" "systemd-pcrlock-machine-id.service" "systemd-pcrlock-make-policy.service" "systemd-pcrlock-secureboot-authority.service" "systemd-pcrlock-secureboot-policy.service" "systemd-pcrlock@.service" "systemd-pcrlock.socket" "systemd-tpm2-setup.service")
+TARGET_SERVICES=("systemd-networkd.service"
+                 "systemd-networkd.socket"
+                 "systemd-homed.service"
+                 "systemd-userdbd.socket"
+                 "systemd-journal-remote.service"
+                 "systemd-journal-upload.service"
+                 "systemd-journal-gatewayd.service"
+                 "systemd-pcrlock.service")
 
 # --- HELP MENU ---
 usage() {
