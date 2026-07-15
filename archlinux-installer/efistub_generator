@@ -1,0 +1,98 @@
+#!/bin/bash
+
+# --- AUTOMATED DETECTION ---
+ESP_MOUNT=$(findmnt -n -o TARGET /boot 2>/dev/null || findmnt -n -o TARGET /efi 2>/dev/null)
+ESP_DEV=$(findmnt -n -o SOURCE /boot 2>/dev/null || findmnt -n -o SOURCE /efi 2>/dev/null)
+
+if [[ -z "$ESP_MOUNT" ]]; then
+    echo "Error: Could not find an EFI System Partition mounted at /boot or /efi."
+    exit 1
+fi
+
+DISK="/dev/$(lsblk -no PKNAME "$ESP_DEV" | head -n1)"
+PART=$(lsblk -no PARTN "$ESP_DEV" | head -n1)
+KERNEL_VERSION="$1"
+EFI_DIR="${ESP_MOUNT}/EFI/Linux"
+UKI_FILE="${EFI_DIR}/${KERNEL_VERSION}.efi"
+
+# --- VALIDATION ---
+if [[ -z "$KERNEL_VERSION" ]]; then
+    echo "Usage: sudo $0 <kernel-version>"
+    exit 1
+fi
+
+if [[ "$USER" != "root" ]]; then
+    echo "This script must be run as root."
+    exit 1
+fi
+
+# --- FUNCTIONS ---
+
+setup_preset() {
+    local PRESET_FILE="/etc/mkinitcpio.d/${KERNEL_VERSION}.preset"
+    mkdir -p "${EFI_DIR}"
+
+    cat <<EOF > "$PRESET_FILE"
+# mkinitcpio preset for ${KERNEL_VERSION}
+ALL_config="/etc/mkinitcpio.conf"
+ALL_kver="/boot/vmlinuz-${KERNEL_VERSION}"
+PRESETS=('default')
+default_uki="${UKI_FILE}"
+default_options="--cmdline /etc/kernel/cmdline"
+EOF
+}
+
+make_kernel_image() {
+    echo "==> Generating UKI image for ${KERNEL_VERSION}..."
+    mkinitcpio -p "$KERNEL_VERSION"
+    rm -f "${ESP_MOUNT}/initramfs-${KERNEL_VERSION}.img"
+}
+
+configure_secure_boot() {
+    echo "==> Configuring Secure Boot..."
+
+    # 1. Ensure keys exist (only runs if keys aren't already initialized)
+    if [[ ! -f "/var/lib/sbctl/db" ]]; then
+        sbctl create-keys
+    fi
+
+    # 2. Check if keys are enrolled
+    if ! sbctl status | grep -q "Setup Mode: Disabled"; then
+        echo "!! Warning: System is in Setup Mode. Enrolling keys..."
+        sbctl enroll-keys --microsoft
+    fi
+
+    # 3. Sign the UKI and add to database for auto-signing
+    # The -s flag saves the file to the sbctl database for future re-signs
+    if [[ -f "$UKI_FILE" ]]; then
+        echo "==> Signing $UKI_FILE..."
+        sbctl sign -s "$UKI_FILE"
+    else
+        echo "Error: UKI not found at $UKI_FILE. Signing failed."
+        exit 1
+    fi
+}
+
+bootloader_config() {
+    echo "==> Configuring UEFI boot entry..."
+
+    existing_entry=$(efibootmgr | grep "Arch $KERNEL_VERSION" | cut -d'*' -f1 | grep -o 'Boot[0-9]*' | head -n1)
+    if [[ -n "$existing_entry" ]]; then
+        efibootmgr -b "${existing_entry#Boot}" -B
+    fi
+
+    efibootmgr --create \
+        --disk "$DISK" \
+        --part "$PART" \
+        --label "Arch $KERNEL_VERSION" \
+        --loader "\\EFI\\Linux\\${KERNEL_VERSION}.efi" \
+        --unicode
+}
+
+# --- EXECUTION ---
+setup_preset
+make_kernel_image
+configure_secure_boot
+bootloader_config
+
+echo "==> Success! Boot entry for $KERNEL_VERSION created and signed."

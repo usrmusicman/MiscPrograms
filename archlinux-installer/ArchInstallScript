@@ -26,7 +26,7 @@ NVIDIA_PRO_DRV="lib32-nvidia-utils lib32-opencl-nvidia libva-nvidia-driver libvd
 NVIDIA_NVK="lib32-opencl-mesa lib32-vulkan-mesa-implicit-layers lib32-vulkan-mesa-layers lib32-vulkan-nouveau opencl-mesa vulkan-mesa-implicit-layers vulkan-mesa-layers vulkan-nouveau"
 
 # Base Package List
-PACKAGES="7zip ark bash-completion bluez bluez-cups bluez-hid2hci bluez-libs bluez-obex bluez-utils breeze5 cups cups-browsed dolphin dolphin-plugins exfatprogs ffmpeg ffmpeg4.4 ffmpegthumbs firefox firefox-i18n-en-us flatpak fwupd gamemode gamescope gst-libav gst-plugin-pipewire gst-plugins-bad gst-plugins-bad-libs gst-plugins-base gst-plugins-base-libs gst-plugins-espeak gst-plugins-good gst-plugins-ugly gwenview icoutils ifuse iproute2 irqbalance kaccounts-integration kate kcalc kdeconnect kdegraphics-mobipocket kdegraphics-thumbnailers kdialog keditbookmarks kio-admin kio-extras kio-fuse konsole ksshaskpass less lib32-gamemode lib32-libcurl-compat lib32-libcurl-gnutls lib32-mangohud lib32-pipewire-jack lib32-pipewire-v4l2 libcurl-compat libcurl-gnutls libdvdcss libnvidia-container libgpod lsb-release man-db man-pages man-pages-utils mangohud mpv multilib-devel networkmanager networkmanager-vpn-plugin-openvpn noto-fonts noto-fonts-cjk noto-fonts-emoji nss-mdns ntfs-3g orca partitionmanager phonon-qt6-vlc pipewire-audio pipewire-jack pipewire-v4l2 print-manager plasma-meta plymouth plymouth-kcm power-profiles-daemon pulsemixer realtime-privileges reflector steam steam-devices system-config-printer umu-launcher unrar unzip vi vim vlc vulkan-tools yt-dlp zip zram-generator"
+PACKAGES="7zip ark bash-completion bluez bluez-cups bluez-hid2hci bluez-libs bluez-obex bluez-utils breeze5 cups cups-browsed dolphin dolphin-plugins exfatprogs ffmpeg ffmpeg4.4 ffmpegthumbs firefox firefox-i18n-en-us flatpak fwupd gamemode gamescope git git-lfs gst-libav gst-plugin-pipewire gst-plugins-bad gst-plugins-bad-libs gst-plugins-base gst-plugins-base-libs gst-plugins-espeak gst-plugins-good gst-plugins-ugly gwenview icoutils ifuse iproute2 irqbalance kaccounts-integration kate kcalc kdeconnect kdegraphics-mobipocket kdegraphics-thumbnailers kdialog keditbookmarks kio-admin kio-extras kio-fuse konsole ksshaskpass less lib32-gamemode lib32-libcurl-compat lib32-libcurl-gnutls lib32-mangohud lib32-pipewire-jack lib32-pipewire-v4l2 libcurl-compat libcurl-gnutls libdvdcss libnvidia-container libgpod lsb-release man-db man-pages man-pages-utils mangohud mpv multilib-devel networkmanager networkmanager-vpn-plugin-openvpn noto-fonts noto-fonts-cjk noto-fonts-emoji nss-mdns ntfs-3g openssh orca partitionmanager phonon-qt6-vlc pipewire-audio pipewire-jack pipewire-v4l2 print-manager plasma-meta plymouth plymouth-kcm power-profiles-daemon pulsemixer realtime-privileges reflector steam steam-devices system-config-printer umu-launcher unrar unzip vi vim vlc vulkan-tools yt-dlp zip zram-generator"
 
 add_user() {
     echo "Add User..."
@@ -72,21 +72,6 @@ configure_hostname() {
     echo "Configure Compter Name..."
 
     echo "$HOSTNAME" > "$CHROOT_DIR"/etc/hostname
-}
-
-configure_io_schedulers() {
-    echo "Applying I/O Scheduler Udev Rules..."
-
-    cat <<EOF > "$CHROOT_DIR/etc/udev/rules.d/60-ioschedulers.rules"
-# Set BFQ for rotational drives (HDDs)
-ACTION=="add|change", KERNEL=="sd[a-z]*|mmcblk[0-9]*", ATTR{queue/rotational}=="1", ATTR{queue/scheduler}="bfq"
-
-# Set 'none' for non-rotational NVMe drives
-ACTION=="add|change", KERNEL=="nvme[0-9]*n[0-9]*", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="none"
-
-# Set 'none' for non-rotational SATA SSDs
-ACTION=="add|change", KERNEL=="sd[a-z]*", ATTR{queue/rotational}=="0", ATTR{queue/scheduler}="none"
-EOF
 }
 
 configure_keyboard() {
@@ -172,17 +157,11 @@ configure_mkinitcpio() {
 
     mkdir -p "$CHROOT_DIR/etc/mkinitcpio.conf.d"
 
-    # 1. Performance & Filesystem Modules
-    # ntsync for Wine, ext4 for your root, and nls for character encoding
-    cat <<EOF > "$CHROOT_DIR/etc/mkinitcpio.conf.d/performance.conf"
-MODULES+=(ntsync ext4 nls_ascii nls_utf8)
-EOF
-
-    # 2. Nvidia Early KMS Modules
+    # Nvidia Early KMS Modules
     # This ONLY creates the file if nvidia or nvidia_foss is detected in your config
     if [[ "$GPU0" =~ ^nvidia || "$GPU1" =~ ^nvidia ]]; then
         echo "Nvidia detected ($GPU0/$GPU1). Adding Early KMS modules..."
-        cat <<EOF > "$CHROOT_DIR/etc/mkinitcpio.conf.d/nvidia.conf"
+        cat <<EOF > "$CHROOT_DIR/etc/mkinitcpio.conf.d/10-nvidia.conf"
 # Ensure the GPU initializes before the display manager starts
 MODULES+=(nvidia nvidia_modeset nvidia_uvm nvidia_drm)
 EOF
@@ -194,23 +173,23 @@ EOF
 configure_mkinitcpio_uki_preset() {
     echo "Setting up mkinitcpio UKI preset..."
 
-    local PRESET_FILE="$CHROOT_DIR/etc/mkinitcpio.d/linux-zen.preset"
+    local PRESET_FILE="$CHROOT_DIR/etc/mkinitcpio.d/${KERNEL}.preset"
     local EFI_DIR="/$BOOTLOADER_PATH/EFI/Linux"
 
     mkdir -p "${CHROOT_DIR}${EFI_DIR}"
 
     cat <<EOF > "$PRESET_FILE"
-# mkinitcpio preset for linux-zen to generate UKI only
+# mkinitcpio preset for ${KERNEL} to generate UKI only
 ALL_config="/etc/mkinitcpio.conf"
-ALL_kver="/boot/vmlinuz-linux-zen"
+ALL_kver="/boot/vmlinuz-${KERNEL}"
 
 PRESETS=('default')
 
 # We disable the standard .img generation to save space/time
-# default_image="/boot/initramfs-linux-zen.img"
+# default_image="/boot/initramfs-${KERNEL}.img"
 
 # Generate the UKI (.efi) directly
-default_uki="$EFI_DIR/linux-zen.efi"
+default_uki="$EFI_DIR/${KERNEL}.efi"
 default_options="--cmdline /etc/kernel/cmdline"
 EOF
 }
@@ -221,19 +200,6 @@ configure_ntp() {
     # Enable systemd-timesyncd
     # This is much lighter than chrony or ntpd for a gaming/workstation build
     arch-chroot "$CHROOT_DIR" systemctl enable systemd-timesyncd.service
-}
-
-configure_ntsync() {
-    echo "Configuring ntsync for high-performance Wine synchronization..."
-
-    # 1. Create the module load file to ensure it starts at boot
-    echo "ntsync" > "$CHROOT_DIR/etc/modules-load.d/ntsync.conf"
-
-    # 2. Create a udev rule to allow the user to access /dev/ntsync
-    # This is critical so Wine can actually use the driver without root
-    cat <<EOF > "$CHROOT_DIR/etc/udev/rules.d/99-ntsync.rules"
-KERNEL=="ntsync", MODE="0666"
-EOF
 }
 
 configure_pacman_makepkg() {
@@ -270,7 +236,7 @@ configure_secure_boot() {
     fi
 
     # 3. Sign the UKI and save to the database for automatic re-signing
-    local UKI_PATH="/$BOOTLOADER_PATH/EFI/Linux/linux-zen.efi"
+    local UKI_PATH="/$BOOTLOADER_PATH/EFI/Linux/${KERNEL}.efi"
     if [[ -f "${CHROOT_DIR}${UKI_PATH}" ]]; then
         echo "Signing $UKI_PATH..."
         arch-chroot "$CHROOT_DIR" sbctl sign -s "$UKI_PATH"
@@ -296,21 +262,6 @@ configure_timezone() {
         echo "!! Error: Timezone $FINAL_ZONE not found. Defaulting to UTC."
         arch-chroot "$CHROOT_DIR" ln -sf /usr/share/zoneinfo/UTC /etc/localtime
     fi
-}
-
-configure_uinput() {
-    echo "Configuring uinput for virtual controllers..."
-
-    # 1. Alias for modprobe
-    echo "alias char-major-10-223 uinput" > "$CHROOT_DIR/etc/modprobe.d/uinput.conf"
-
-    # 2. Force load at boot
-    echo "uinput" > "$CHROOT_DIR/etc/modules-load.d/uinput.conf"
-
-    # 3. Udev rule to allow the 'input' group to use it (Crucial for Steam/Controllers)
-    cat <<EOF > "$CHROOT_DIR/etc/udev/rules.d/99-uinput.rules"
-KERNEL=="uinput", GROUP="input", MODE="0660", OPTIONS+="static_node=uinput"
-EOF
 }
 
 configure_user_groups() {
@@ -383,21 +334,24 @@ finalize_uki() {
     echo "Generating Unified Kernel Image (UKI) via mkinitcpio..."
 
     # Remove the default images if they were created during pacstrap
-    rm -f "$CHROOT_DIR"/boot/initramfs-linux-zen.img
-    rm -f "$CHROOT_DIR"/boot/initramfs-linux-zen-fallback.img
+    rm -f "$CHROOT_DIR"/boot/initramfs-${KERNEL}.img
+    rm -f "$CHROOT_DIR"/boot/initramfs-${KERNEL}-fallback.img
 
     # Build only what is in our new preset (the UKI)
-    arch-chroot "$CHROOT_DIR" mkinitcpio -p linux-zen
+    arch-chroot "$CHROOT_DIR" mkinitcpio -p ${KERNEL}
 }
 
 install_archlinux() {
     echo "Install Archlinux..."
     # Added 'dkms' to ensure nvidia-open-dkms can build and be signed
-    pacstrap "$CHROOT_DIR" binutils base base-devel dosfstools mkinitcpio systemd-ukify e2fsprogs efibootmgr linux-firmware linux-zen linux-zen-headers sbctl sbsigntools dkms
+    pacstrap "$CHROOT_DIR" binutils base base-devel dosfstools mkinitcpio systemd-ukify e2fsprogs efibootmgr linux-firmware ${KERNEL} ${KERNEL}-headers sbctl sbsigntools dkms
 
     cp /etc/pacman.d/mirrorlist "$CHROOT_DIR"/etc/pacman.d/mirrorlist
     arch-chroot "$CHROOT_DIR" pacman-key --init
     arch-chroot "$CHROOT_DIR" pacman-key --populate archlinux
+
+    echo "Install efibootmgr efistub enhanced script"
+    cp efistub_generator $CHROOT_DIR/usr/local/bin
 }
 
 install_base_pkgs() {
@@ -516,8 +470,8 @@ register_efistub() {
     echo "Registering UKI with UEFI Boot Manager..."
 
     # 1. Clean up old entries to avoid BIOS clutter
-    # This finds the hex ID (e.g., 0001) for any entry labeled "Arch Linux Zen"
-    local OLD_ENTRY=$(arch-chroot "$CHROOT_DIR" efibootmgr | grep "Arch Linux Zen" | getconf ARG_MAX=1 | awk '{print $1}' | sed 's/Boot//;s/\*//')
+    # This finds the hex ID (e.g., 0001) for any entry labeled "Arch ${KERNEL}"
+    local OLD_ENTRY=$(arch-chroot "$CHROOT_DIR" efibootmgr | grep "Arch ${KERNEL}" | getconf ARG_MAX=1 | awk '{print $1}' | sed 's/Boot//;s/\*//')
 
     if [[ -n "$OLD_ENTRY" ]]; then
         echo "Removing old UEFI entry $OLD_ENTRY..."
@@ -533,8 +487,8 @@ register_efistub() {
     arch-chroot "$CHROOT_DIR" efibootmgr --create \
         --disk "$DISK" \
         --part "$PART" \
-        --label "Arch linux-zen" \
-        --loader "\\EFI\\Linux\\linux-zen.efi" \
+        --label "Arch ${KERNEL}" \
+        --loader "\\EFI\\Linux\\${KERNEL}.efi" \
         --unicode
 }
 
@@ -545,7 +499,7 @@ setup_kernel_cmdline() {
     local ROOT_UUID=$(blkid -s UUID -o value "$ROOT_PARTITION")
 
     # Construct the base options
-    local CMDLINE="root=UUID=$ROOT_UUID rw threadirqs usbcore.autosuspend=-1 zswap.enabled=0 quiet splash"
+    local CMDLINE="root=UUID=$ROOT_UUID rw threadirqs zswap.enabled=0 quiet splash"
 
     # Append Nvidia specific options if needed
     if [[ "$GPU0" == "nvidia" || "$GPU1" == "nvidia" ]]; then
@@ -592,9 +546,6 @@ if [[ "$USER" == "root" ]]; then
     configure_hostname
     configure_locale
     configure_keyboard
-    configure_ntsync
-    configure_uinput
-    configure_io_schedulers
     configure_timezone
     configure_ntp
     finalize_uki
