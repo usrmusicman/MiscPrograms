@@ -13,7 +13,7 @@ YABRIDGE_ROOT="$BUNDLE_PATH/yabridge"
 YABRIDGECTL_PATH="$YABRIDGE_ROOT/yabridgectl"
 
 # Versions for Immutable Setup
-WINE_VER="11.5"
+WINE_VER="11.14"
 YABRIDGE_VER="5.1.10"
 WINEASIO_VER="1.3.0"
 WINEASIO_REV="2.1"
@@ -99,18 +99,60 @@ setup_wineasio() {
 }
 
 # -------------------------
+# Feature: Bazzite Permissions
+# -------------------------
+setup_bazzite_groups() {
+    if is_immutable; then
+        log_msg "Configuring Bazzite audio/render groups..."
+
+        # Copy groups to local config if they don't exist yet
+        grep -q "^audio:" /etc/group || grep "^audio:" /usr/lib/group | sudo tee -a /etc/group >/dev/null 2>&1
+        grep -q "^render:" /etc/group || grep "^render:" /usr/lib/group | sudo tee -a /etc/group >/dev/null 2>&1
+
+        # Add user
+        sudo usermod -aG audio "$USER"
+        sudo usermod -aG render "$USER"
+
+        log_msg "Added user to audio and render groups (requires a reboot to take effect)."
+    fi
+}
+
+# -------------------------
 # Environment Management
 # -------------------------
 setup_env_script() {
-    local env_file="$HOME/.config/yavst/env.sh"
-    mkdir -p "$(dirname "$env_file")"
+    # 1. Target the .bashrc.d directory instead of .config/yavst
+    local bashrc_d="$HOME/.bashrc.d"
+    local env_file="$bashrc_d/yavst"
+
+    mkdir -p "$bashrc_d"
+
     cat > "$env_file" <<EOF
 export PATH="$BUNDLE_PATH/bin:$YABRIDGE_ROOT:\$PATH"
 export WINELOADER="$BUNDLE_PATH/bin/wine"
 export WINESERVER="$BUNDLE_PATH/bin/wineserver"
 export WINEDLLPATH="$BUNDLE_PATH/lib/wine"
 EOF
-    log_msg "Environment script created at $env_file. Source this in your .bashrc or .zshrc."
+    log_msg "Environment script created at $env_file."
+
+    # 2. Inject the auto-loader into .bashrc if it isn't there already
+    if [[ -f "$HOME/.bashrc" ]] && ! grep -q "bashrc\.d" "$HOME/.bashrc"; then
+        log_msg "Adding .bashrc.d auto-loader to ~/.bashrc..."
+        cat >> "$HOME/.bashrc" <<'EOF'
+
+# User specific aliases and functions
+if [ -d ~/.bashrc.d ]; then
+    for rc in ~/.bashrc.d/*; do
+        if [ -f "$rc" ]; then
+            . "$rc"
+        fi
+    done
+fi
+unset rc
+EOF
+    fi
+
+    log_msg "YaVST environment will automatically load on your next terminal launch."
 }
 
 # -------------------------
@@ -122,7 +164,7 @@ YaVST CLI Manager
 Usage: $(basename "$0") [flag]
 
 Commands:
-  --install        Install/Update Wine & Yabridge (Portable on Immutable)
+  --install        Install/Update Wine & Yabridge (Portable or Immutable)
   --wineasio       Register WineASIO DLLs in current WINEPREFIX
   --add [path]     Add a VST directory to Yabridge
   --remove [path]  Remove a VST directory from Yabridge
@@ -135,6 +177,13 @@ EOF
 # Determine which yabridgectl binary to use
 if is_immutable; then
     YCTL="$YABRIDGECTL_PATH"
+
+    log_msg "Immutable system detected. Installing portable bundle..."
+
+    # Call your new group setup function
+    setup_bazzite_groups
+
+    mkdir -p "$BUNDLE_PATH" "$DOWNLOAD_PATH"
 else
     YCTL=$(command -v yabridgectl || echo "yabridgectl")
 fi
