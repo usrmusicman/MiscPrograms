@@ -11,13 +11,16 @@ BUNDLE_PATH="$HOME/.local/bin/YaVST"
 DOWNLOAD_PATH="$HOME/Downloads"
 YABRIDGE_ROOT="$BUNDLE_PATH/yabridge"
 YABRIDGECTL_PATH="$YABRIDGE_ROOT/yabridgectl"
+WINE_LINK="https://github.com/Kron4ek/Wine-Builds/releases/download"
+YABRIDGE_LINK="https://github.com/usrmusicman/MiscPrograms/raw/refs/heads/main"
 
-# Versions for Immutable Setup
+# Versions & URLs for Immutable Setup
 WINE_VER="11.18"
 YABRIDGE_VER="5.1.10"
-WINEASIO_VER="1.3.0"
-WINEASIO_REV="2.1"
 WINE_BUILD_NAME="staging-tkg-amd64"
+
+# New WineASIO RPM URL source
+WINEASIO_RPM_URL="https://repos.fyralabs.com/terrarawhide/wineasio-0:1.3.0-1.fcrawhide.x86_64.rpm"
 
 # -------------------------
 # System Detection
@@ -97,13 +100,13 @@ install_core() {
 
         # Wine Installation
         local wine_file="wine-${WINE_VER}-${WINE_BUILD_NAME}.tar.xz"
-        wget -c "https://github.com{WINE_VER}/$wine_file" -O "$DOWNLOAD_PATH/$wine_file"
+        wget -c "$WINE_LINK/$WINE_VER/$wine_file" -O "$DOWNLOAD_PATH/$wine_file"
         rm -rf "$BUNDLE_PATH/bin" "$BUNDLE_PATH/lib" "$BUNDLE_PATH/share"
         tar -xJf "$DOWNLOAD_PATH/$wine_file" -C "$BUNDLE_PATH" --strip-components=1
 
         # Yabridge Installation
         local y_file="yabridge-${YABRIDGE_VER}.tar.gz"
-        wget -c "https://github.com{YABRIDGE_VER}.tar.gz" -O "$DOWNLOAD_PATH/$y_file"
+        wget -c "$YABRIDGE_LINK/$y_file" -O "$DOWNLOAD_PATH/$y_file"
         rm -rf "$YABRIDGE_ROOT"
         mkdir -p "$YABRIDGE_ROOT"
         tar -xzf "$DOWNLOAD_PATH/$y_file" -C "$YABRIDGE_ROOT"
@@ -119,40 +122,6 @@ install_core() {
         setup_env_script
     else
         log_msg "Regular distro detected. Please ensure 'wine' and 'yabridge' are installed via your package manager."
-    fi
-}
-
-# -------------------------
-# Feature: WineASIO Setup
-# -------------------------
-setup_wineasio() {
-    local prefix="${WINEPREFIX:-$HOME/.wine}"
-
-    if is_immutable; then
-        log_msg "Immutable: Extracting WineASIO into portable bundle..."
-        local pkg="wineasio-${WINEASIO_VER}-${WINEASIO_REV}-x86_64.pkg.tar.zst"
-        wget -c "https://garudalinux.org" -O "$DOWNLOAD_PATH/$pkg"
-
-        local temp=$(mktemp -d)
-        tar -I zstd -xf "$DOWNLOAD_PATH/$pkg" -C "$temp"
-
-        mkdir -p "$prefix/drive_c/windows/system32/"
-        cp -v "$temp"/usr/lib/wine/x86_64-windows/wineasio64.dll "$prefix/drive_c/windows/system32/"
-        mkdir -p "$BUNDLE_PATH/lib/wine/x86_64-unix"
-        cp -v "$temp"/usr/lib/wine/x86_64-unix/wineasio64.dll.so "$BUNDLE_PATH/lib/wine/x86_64-unix/"
-        rm -rf "$temp"
-
-        log_msg "Registering WineASIO via portable Wine loader..."
-        PATH="$BUNDLE_PATH/bin:$PATH" WINELOADER="$BUNDLE_PATH/bin/wine" WINESERVER="$BUNDLE_PATH/bin/wineserver" WINEDLLPATH="$BUNDLE_PATH/lib/wine" "$BUNDLE_PATH/bin/wine" regsvr32 wineasio64.dll
-    else
-        log_msg "Regular: Registering system-wide WineASIO..."
-        local sys_dll64="/usr/lib/wine/x86_64-unix/wineasio64.dll.so"
-        if [[ -f "$sys_dll64" ]]; then
-            cp -v "$sys_dll64" "$prefix/drive_c/windows/system32/wineasio64.dll"
-            wine regsvr32 wineasio64.dll
-        else
-            error_exit "System WineASIO DLL not found. Please install the wineasio package."
-        fi
     fi
 }
 
@@ -212,7 +181,6 @@ Usage: $(basename "$0") [flag]
 Commands:
   --sys-prep       Configure real-time limits/groups & append low-latency kargs (Bazzite)
   --install        Install/Update user-space portable Wine & Yabridge
-  --wineasio       Register WineASIO DLLs in current WINEPREFIX
   --add [path]     Add a VST directory to Yabridge
   --remove [path]  Remove a VST directory from Yabridge
   --sync           Manually trigger yabridgectl sync
@@ -235,9 +203,6 @@ case "$1" in
         ;;
     --install)
         install_core
-        ;;
-    --wineasio)
-        setup_wineasio
         ;;
     --add)
         shift
